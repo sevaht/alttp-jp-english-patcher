@@ -1,0 +1,47 @@
+# Self-contained uv tooling project for the patcher's Python (scripts/*.py).
+# Not a package -- it exists so `uv run <tool>` resolves the dev tools and this
+# file's [tool.*] settings, exactly the way the snes-assembly-parser library
+# lints its own code. Run `./checks`.
+#
+# The snes-assembly-parser library itself is NOT a dependency here: the scripts
+# use a local (possibly unpublished) checkout, so `./checks` points MYPYPATH at
+# it rather than installing a pinned version.
+
+[project]
+name = "alttp-english-patcher"
+version = "0"
+requires-python = ">=3.12"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "black>=26.3.1,<27.0.0",
+    "mypy>=1.20.0,<2.0.0",
+    "ruff>=0.15.8,<0.16.0",
+    "vulture>=2.14,<3.0.0",
+]
+
+[tool.black]
+line-length = 79
+skip-magic-trailing-comma = true
+
+[tool.mypy]
+strict = true
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.lint]
+extend-ignore = ["COM812", "COM819", "E203", "TD003"]
+select = [
+    "A", "ANN", "ARG", "ASYNC", "B", "BLE", "C4", "C90", "COM",
+    "DTZ", "E", "EM", "ERA", "F", "FA", "FLY", "FURB", "I",
+    "ISC", "LOG", "N", "PERF", "PGH", "PIE", "PLR", "PLW", "PTH",
+    "Q", "RET", "RSE", "RUF", "S", "SIM", "TC", "TCH", "TD",
+    "TID", "TRY", "UP",
+]
+
+[tool.vulture]
+min_confidence = 70

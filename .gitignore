@@ -1,0 +1,12 @@
+# Fetched sources (parser library + the two disassemblies) -- see apply.sh.
+.deps/
+
+# Python / tooling caches (uv.lock is tracked, for reproducible dev tooling)
+__pycache__/
+.venv/
+.ruff_cache/
+.mypy_cache/
+
+# ROMs and build artifacts must never live here.
+*.sfc
+*.srm

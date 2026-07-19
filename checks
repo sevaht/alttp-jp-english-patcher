@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Lint + typecheck the patcher's Python (scripts/*.py), self-contained via uv
+# (dev tools + [tool.*] settings come from this directory's pyproject.toml, the
+# same way snes-assembly-parser lints its own code). The parser library is used
+# from a local checkout on MYPYPATH so mypy resolves the imports.
+#
+#   SNES_PARSER_DIR  library checkout for mypy (default: ./.deps/snes-assembly-parser,
+#                    populated by ./apply.sh)
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lib="${SNES_PARSER_DIR:-$here/.deps/snes-assembly-parser}/src"
+
+command -v uv >/dev/null 2>&1 || { echo "error: uv not found" >&2; exit 1; }
+[ -d "$lib/snes_assembly_parser" ] || {
+    echo "error: snes-assembly-parser not found at $lib" >&2
+    echo "  run ./apply.sh once, or set SNES_PARSER_DIR" >&2
+    exit 1; }
+
+cd "$here/scripts"
+scripts=(graft.py generate_us_text.py patch.py base_edits.py mainasm.py gitignore.py verify_base.py)
+run() { local msg="$1"; shift; echo "== $msg =="; "$@"; echo; }
+
+run "format code"    uv run black --target-version py312 "${scripts[@]}"
+run "sort imports"   uv run ruff check --fix --select I "${scripts[@]}"
+run "typecheck"      env MYPYPATH="$lib" uv run mypy "${scripts[@]}"
+run "lint"           uv run ruff check "${scripts[@]}"
+run "find dead code" uv run vulture "${scripts[@]}"
+echo "All checks passed!"
