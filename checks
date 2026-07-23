@@ -18,7 +18,11 @@ command -v uv >/dev/null 2>&1 || { echo "error: uv not found" >&2; exit 1; }
     exit 1; }
 
 cd "$here/scripts"
-scripts=(graft.py generate_us_text.py patch.py base_edits.py mainasm.py gitignore.py verify_base.py)
+scripts=(
+    graft.py patch.py base_edits.py mainasm.py gitignore.py verify_base.py
+    generate_us_text.py generate_bank00.py generate_credits.py
+    generate_item_menu.py generate_menu.py
+)
 run() { local msg="$1"; shift; echo "== $msg =="; "$@"; echo; }
 
 run "format code"    uv run black --target-version py312 "${scripts[@]}"

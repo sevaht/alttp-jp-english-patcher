@@ -20,8 +20,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from base_edits import apply_all
 from snes_assembly_parser import Source
+
+from base_edits import apply_all
 
 REFERENCE = Path(__file__).with_name("reference_hashes.txt")
 

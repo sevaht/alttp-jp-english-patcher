@@ -9,7 +9,8 @@ diff of the base-assembly changes.
 ## The two repositories
 
 * **This repo (patcher)** — all the generative work: the Python toolkit, the
-  hand-written `english/*.asm` payload, the asset extractor, and `apply.sh`.
+  hand-maintained `english/*.asm` payload (usgfx/usfs_gfx), the asset
+  extractor, and `apply.sh`.
 * **The target (jpdasm fork)** — a clean fork of upstream `jpdasm`. After
   `apply.sh` it is a functional English translation: hooked banks, the
   `english/` sources, a patched `main.asm`, and the build tooling. None of this
@@ -24,8 +25,12 @@ always derived from a known-pristine base.
 | Output in the target | Produced by | From |
 | --- | --- | --- |
 | `bank_00/0C/0D/0E/13/18/1C.asm` hooks | `scripts/base_edits.py` | `.deps/jpdasm` (pristine) |
-| `english/us_text.asm` | `scripts/generate_us_text.py` | `.deps/usdasm` (US disassembly) |
-| `english/{us_menu,en_item_menu,en_credits,us_bank00,usfs_gfx,usgfx}.asm` | copied from `payload/` | — |
+| `english/us_text.asm` | `scripts/generate_us_text.py` | `.deps/usdasm` (bank_0E → $2E) |
+| `english/us_bank00.asm` | `scripts/generate_bank00.py` | `.deps/jpdasm` (bank_00 → $20) |
+| `english/en_credits.asm` | `scripts/generate_credits.py` | `.deps/jpdasm` + `usdasm` (→ $2E) |
+| `english/en_item_menu.asm` | `scripts/generate_item_menu.py` | `.deps/usdasm` + `jpdasm` (→ $2D) |
+| `english/us_menu.asm` | `scripts/generate_menu.py` | `.deps/usdasm` + `jpdasm` (→ $2C) |
+| `english/{usgfx,usfs_gfx}.asm` | copied from `payload/` | — |
 | `main.asm` includes + 2 MB padding | `scripts/mainasm.py` | — |
 | `.gitignore` binary excludes | `scripts/gitignore.py` | — |
 | `extract_english_assets.py`, `build_english_rom.sh` | copied | — |
@@ -42,9 +47,10 @@ hand later).
   handler), and a few byte-neutral operand swaps. Every edit is declared there
   and located by label/`#_` anchor — never a line number — so it fails loud if
   upstream drifts.
-* **`generate_us_text.py`** relocates the US text engine + message data into the
-  expanded ROM (2nd MB) under the `EN_` namespace, pulling what it needs *by
-  name* and following every reference (no hand-maintained block list).
+* **The five `generate_*.py`** each relocate a subsystem into the expanded ROM
+  (2nd MB) under the `EN_` namespace, pulling what they need *by name* from the
+  US and/or JP disassembly and applying the documented English edits — no
+  hand-maintained relocated assembly.
 
 ## Prerequisites
 
@@ -68,7 +74,7 @@ hand later).
 # Deploy only (extract assets on the target later):
 ./apply.sh --target /path/to/jpdasm-fork
 
-# Baseline: deploy the change-free form (no base hooks, baseline us_text.asm):
+# Baseline: deploy the change-free form (no base hooks, baseline english/*.asm):
 ./apply.sh --target /path/to/jpdasm-fork --baseline
 
 # Add --verify to run the base-edit regression check after deploying.
@@ -102,8 +108,8 @@ make two commits on the target and diff them.
    cd FORK && git add -A && git commit -m "English graft: apply base-assembly hooks"
    ```
 
-3. **Diff** — confined to the base-bank hooks and the `us_text.asm` edits; the
-   hand-written assets and `main.asm` are identical on both sides, so they do
+3. **Diff** — confined to the base-bank hooks and the generated-code edits; the
+   hand-maintained assets and `main.asm` are identical on both sides, so they do
    not clutter it:
 
    ```bash

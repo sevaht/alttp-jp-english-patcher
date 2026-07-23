@@ -50,6 +50,8 @@ import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from snes_assembly_parser import Source, code_lines, data, datas, notes
+
 from graft import (
     Placement,
     assemble,
@@ -58,7 +60,6 @@ from graft import (
     mirror,
     substitute,
 )
-from snes_assembly_parser import Source, code_lines, data, datas, notes
 
 if TYPE_CHECKING:
     from snes_assembly_parser import Line, Segment
@@ -392,7 +393,7 @@ def main() -> None:
         "--out",
         type=Path,
         default=OUT,
-        help=f"where to write the generated us_text.asm (default: {OUT})",
+        help=f"where to write us_text.asm (default: {OUT})",
     )
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -2,9 +2,9 @@
 # apply.sh -- deploy the English graft into a pristine jpdasm checkout.
 #
 # Turns a fork of spannerisms/jpdasm into a functional English translation by:
-#   1. hooking the base banks              (scripts/base_edits.py)
-#   2. generating english/us_text.asm      (scripts/generate_us_text.py, from usdasm)
-#   3. copying the hand-written english/*.asm assets + the asset extractor
+#   1. hooking the base banks               (scripts/base_edits.py)
+#   2. generating every english/*.asm       (the five scripts/generate_*.py)
+#   3. copying the hand-maintained english assets (usgfx/usfs_gfx) + the extractor
 #   4. patching main.asm (english includes + 2 MB padding)
 #   5. updating .gitignore (ROM-derived binaries stay out of git)
 # The target ends up clean -- only the translation, none of this generator.
@@ -97,13 +97,17 @@ run_py() { python3 "$here/scripts/$@"; }
 echo "==> hooking base banks -> $target"
 run_py base_edits.py --src "$jpdasm" --dst "$target" $baseline
 
-echo "==> generating english/us_text.asm"
-run_py generate_us_text.py --usdasm "$usdasm" \
-    --out "$target/english/us_text.asm" $baseline
-
-echo "==> copying hand-written english assets + build tooling"
+echo "==> generating english/*.asm (five subsystem generators)"
 mkdir -p "$target/english"
-cp "$here"/payload/*.asm "$target/english/"
+eng="$target/english"
+run_py generate_us_text.py   --usdasm "$usdasm"                    --out "$eng/us_text.asm"      $baseline
+run_py generate_bank00.py    --jpdasm "$jpdasm"                    --out "$eng/us_bank00.asm"    $baseline
+run_py generate_credits.py   --jpdasm "$jpdasm" --usdasm "$usdasm" --out "$eng/en_credits.asm"   $baseline
+run_py generate_item_menu.py --jpdasm "$jpdasm" --usdasm "$usdasm" --out "$eng/en_item_menu.asm" $baseline
+run_py generate_menu.py      --jpdasm "$jpdasm" --usdasm "$usdasm" --out "$eng/us_menu.asm"       $baseline
+
+echo "==> copying hand-maintained english assets + build tooling"
+cp "$here"/payload/*.asm "$eng/"
 cp "$here/extract_english_assets.py" "$here/build_english_rom.sh" "$target/"
 chmod +x "$target/build_english_rom.sh"
 

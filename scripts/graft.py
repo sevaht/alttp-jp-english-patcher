@@ -19,7 +19,7 @@ to the English graft:
 The library is imported as a plain package (``snes_assembly_parser.source`` /
 ``.segment``); its ``application``/``__main__`` modules -- the only ones with a
 third-party dependency -- are never touched, so a bare checkout on
-``PYTHONPATH`` is enough (see ``generate_us_text.sh``).
+``PYTHONPATH`` is enough (see ``generate.sh``).
 """
 
 from __future__ import annotations

@@ -14,7 +14,7 @@ build tooling.
   this repo (patcher)                         target repo (jpdasm fork)
   ┌───────────────────┐   ./apply.sh          ┌───────────────────────────┐
   │ scripts/  (python)│  ── --target ───────▶ │ bank_00/0C/0D/0E/13/18/1C  │ hooked
-  │ payload/  (asm)   │                        │ english/*.asm              │ deployed
+  │ payload/ (2 asm)  │                        │ english/*.asm              │ deployed
   │ apply.sh          │   fetches usdasm +     │ main.asm                   │ patched
   │ extract/build     │   jpdasm + parser lib  │ extract_english_assets.py  │ + build tool
   └───────────────────┘   into .deps/          └───────────────────────────┘
@@ -43,8 +43,8 @@ assembly changes.
 | Step | Script | Result in the target |
 | --- | --- | --- |
 | Hook base banks | `scripts/base_edits.py` | `bank_00/0C/0D/0E/13/18/1C.asm` gain the function-repointing hooks |
-| Generate text engine | `scripts/generate_us_text.py` | `english/us_text.asm` (relocated US engine + messages) |
-| Deploy assets | `apply.sh` | the hand-written `english/*.asm` + `extract_english_assets.py` + `build_english_rom.sh` |
+| Generate subsystems | the five `scripts/generate_*.py` | `english/{us_text,us_bank00,en_credits,en_item_menu,us_menu}.asm` (relocated US/JP code) |
+| Deploy assets | `apply.sh` | the hand-maintained `english/{usgfx,usfs_gfx}.asm` + `extract_english_assets.py` + `build_english_rom.sh` |
 | Patch main | `scripts/mainasm.py` | `main.asm` gets the english includes + 2 MB padding |
 | Ignore binaries | `scripts/gitignore.py` | `.gitignore` excludes the ROM-derived `english/*` blobs |
 
@@ -54,12 +54,16 @@ assembly changes.
 apply.sh                     the one entry point (orchestrator)
 scripts/                     the generator toolkit
   graft.py  patch.py         relocation + base-edit primitives
-  generate_us_text.py        US text-engine generator (reads usdasm)
+  generate_us_text.py        US text engine     -> us_text.asm ($2E)
+  generate_bank00.py         JP bank-00 font    -> us_bank00.asm ($20)
+  generate_credits.py        JP/US credits      -> en_credits.asm ($2E)
+  generate_item_menu.py      US/JP item menu    -> en_item_menu.asm ($2D)
+  generate_menu.py           US/JP file-select  -> us_menu.asm ($2C)
   base_edits.py              declares every base-bank hook
   mainasm.py  gitignore.py   target main.asm / .gitignore patchers
   verify_base.py             regression guard (frozen hashes)
   reference_hashes.txt       expected base-edit signatures
-payload/                     hand-written english/*.asm deployed verbatim
+payload/                     hand-maintained english/*.asm (usgfx, usfs_gfx) deployed verbatim
 extract_english_assets.py    ROM-derived binary extractor (deployed to target)
 build_english_rom.sh         one-command target build (deployed to target)
 checks  pyproject.toml       lint/typecheck the scripts (needs uv)

@@ -32,6 +32,10 @@ strict = true
 
 [tool.ruff]
 line-length = 79
+# scripts/ holds the local modules (graft, patch, base_edits, ...), so isort
+# classifies them first-party -- keeping import order identical to the dev repo,
+# where these same files sit next to their pyproject.
+src = ["scripts"]
 
 [tool.ruff.lint]
 extend-ignore = ["COM812", "COM819", "E203", "TD003"]
