@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Declarative base-disassembly edits for the English graft, applied by
-:mod:`patch`.
+"""Declarative base-disassembly edits for the English graft, applied through
+the library :class:`~snes_assembly_parser.Patcher`.
 
 The graft relocates whole subsystems into the expanded ROM (2nd MB); this
 module writes the small hooks that make the unmodified JP banks reach those
@@ -22,7 +22,7 @@ import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from patch import LandingPad, Patcher
+from snes_assembly_parser import LandingPad, Patcher
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,18 +35,10 @@ REDIRECT_HEADER = (
     "(english/{file}).",
     "; They keep the JP entry-point names so unmodified same-bank JSR callers "
     "land here and",
-    "; forward across the bank; the JP originals are preserved above as "
-    "UNREACHABLE_*.",
-)
-
-SETLIFTTEXT_NOTE = (
-    "; [ENG-MENU] SetLiftText takes the lift level in A ($0000 power / $0001 "
-    "titan). A plain",
-    "; PLA/PHK/PHA pad would use A to widen the return and clobber that arg "
-    "(the body then",
-    "; indexes 20*A on garbage -> blank 'DO' LIFT slot). Widen via X instead, "
-    "so A survives;",
-    "; same 9 bytes as the A form.",
+    "; forward across the bank with a register-transparent JSL/RTS bridge (an "
+    "argument in",
+    "; A/X/Y passes straight through); the JP originals are preserved "
+    "above as UNREACHABLE_*.",
 )
 
 
@@ -54,17 +46,22 @@ def redirect(bank: str, file: str) -> tuple[str, ...]:
     return tuple(line.format(bank=bank, file=file) for line in REDIRECT_HEADER)
 
 
+def en_pad(name: str, comment: tuple[str, ...] = ()) -> LandingPad:
+    """A landing pad forwarding the freed JP ``name`` to its ``EN_`` copy."""
+    return LandingPad(name, f"EN_{name}", comment)
+
+
 # ---- TEXT subsystem: engine relocated to bank $2E (generate_us_text.py) ----
-def edit_bank_0e(p: Patcher) -> None:
+def edit_bank_0e(patcher: Patcher) -> None:
     # Credits routines relocated to en_credits.asm; free the names, then fill
     # the free-ROM hole with forwarding pads.
-    p.rename("Credits_AddNextAttribution")
-    p.rename("Credits_AddEndingSequenceText")
-    p.landing_pads(
+    patcher.free("Credits_AddNextAttribution")
+    patcher.free("Credits_AddEndingSequenceText")
+    patcher.landing_pads(
         "NULL_0EEDFB",
         [
-            LandingPad("Credits_AddNextAttribution"),
-            LandingPad("Credits_AddEndingSequenceText"),
+            en_pad("Credits_AddNextAttribution"),
+            en_pad("Credits_AddEndingSequenceText"),
         ],
         header=redirect("2E", "en_credits.asm"),
     )
@@ -76,27 +73,27 @@ def edit_bank_0e(p: Patcher) -> None:
         "DecompressFontGFX",
         "BuildSomeTextMasks",
     ):
-        p.rename(name)
+        patcher.free(name)
 
 
-def edit_bank_1c(p: Patcher) -> None:
+def edit_bank_1c(patcher: Patcher) -> None:
     # JP keeps CreateMessagePointers here (US had it in bank_0E); free it.
-    p.rename("CreateMessagePointers")
+    patcher.free("CreateMessagePointers")
 
 
 # ---- FONT + FILE-SELECT: bank_00 hooks, file-select relocated to bank $2C ---
-def edit_bank_00(p: Patcher) -> None:
+def edit_bank_00(patcher: Patcher) -> None:
     # V-IRQ active block: one JML redirects it to the relocated handler
     # (english/us_menu.asm), which picks the name-entry raster-split scanline
     # and JMLs back to $00821B. The JML overwrites only the first instruction
     # (LDA.w TIMEUP) and the opcode of the next (LDA.b #$38, whose $38 operand
     # is orphaned at $008209); the rest of the block stays as the original,
     # now-dead JP instructions.
-    p.relocate_block(
+    patcher.relocate_block(
         0x008205,
         "EN_IRQActiveHandler",
         resume=0x00820A,
-        orphan=[0x38],
+        orphan=(0x38,),
         comment=(
             "; [ENG-FS] V-IRQ active block -> relocated handler in bank $2C "
             "(us_menu.asm).",
@@ -104,32 +101,32 @@ def edit_bank_00(p: Patcher) -> None:
     )
     # File-select play area: US BG3 blank tile $00A9 (JP $0188 was a hex
     # glyph that rendered the US-style play area brown instead of black).
-    p.set_operand(
+    patcher.set_operand(
         0x008335,
         "LDA.w #$00A9",
         comment="[ENG-FS] US BG3 blank tile (was $0188 hex-pattern glyph)",
     )
     # Text box tile count: the US text engine draws a 126-tile box (JP 120);
     # fixes a stale bottom-right tile.
-    p.set_operand(
+    patcher.set_operand(
         0x008D02,
         "LDX.w #$07E0",
         comment="[ENG-TEXT] US 126-tile text box (was $0780 / 120)",
     )
     # Font upload: point the VRAM $E000 upload at our TheFont (JP uploaded a
     # $7E2000 VWF buffer that the US path does not build).
-    p.set_operand(0x00E557, "LDA.b #TheFont>>16")
-    p.set_operand(0x00E563, "LDA.w #TheFont")
-    p.set_operand(0x00E568, "LDX.w #(TheFont_end-TheFont)/2-1")
+    patcher.set_operand(0x00E557, "LDA.b #TheFont>>16")
+    patcher.set_operand(0x00E563, "LDA.w #TheFont")
+    patcher.set_operand(0x00E568, "LDX.w #(TheFont_end-TheFont)/2-1")
     # TransferFontToVRAM is relocated to bank $20 (us_bank00.asm); free it.
-    p.rename("TransferFontToVRAM")
+    patcher.free("TransferFontToVRAM")
 
 
-def edit_bank_0c(p: Patcher) -> None:
+def edit_bank_0c(patcher: Patcher) -> None:
     # File-select modules relocated/compacted to bank $2C (us_menu.asm). Re-pin
     # the FairyY data left behind, free the module names, and repoint the one
     # in-bank reference at the preserved JP copy.
-    p.insert_before("FileSelect_FairyY", ["org $0CCC67"])
+    patcher.insert_before("FileSelect_FairyY", ["org $0CCC67"])
     for name in (
         "Module01_FileSelect",
         "CopySaveToWRAM",
@@ -142,36 +139,36 @@ def edit_bank_0c(p: Patcher) -> None:
         "FileSelectCopyFileTilemap",
         "NamePlayerTilemap",
     ):
-        p.rename(name)
-    p.rewrite_reference(
+        patcher.free(name)
+    patcher.rewrite_reference(
         0x0CCE8B, "CopySaveToWRAM", "UNREACHABLE_CopySaveToWRAM"
     )
 
 
 # ---- ITEM MENU: relocated to bank $2D (en_item_menu.asm) --------------------
-def edit_bank_0d(p: Patcher) -> None:
+def edit_bank_0d(patcher: Patcher) -> None:
     for name in (
         "UpdateBottleMenu",
         "DrawAbilityText",
         "SetLiftText",
         "DrawEquippedYItem",
     ):
-        p.rename(name)
-    p.landing_pads(
+        patcher.free(name)
+    patcher.landing_pads(
         "NULL_0DAFDD",
         [
-            LandingPad("UpdateBottleMenu"),
-            LandingPad("DrawAbilityText"),
-            LandingPad("SetLiftText", via="X", comment=SETLIFTTEXT_NOTE),
-            LandingPad("DrawEquippedYItem"),
+            en_pad("UpdateBottleMenu"),
+            en_pad("DrawAbilityText"),
+            en_pad("SetLiftText"),
+            en_pad("DrawEquippedYItem"),
         ],
         header=redirect("2D", "en_item_menu.asm"),
     )
 
 
 # ---- GRAPHICS: JP menu sheets repointed at US art (usgfx.asm) ---------------
-def edit_bank_13(p: Patcher) -> None:
-    p.rename(
+def edit_bank_13(patcher: Patcher) -> None:
+    patcher.free(
         "GFX_39",
         comment=(
             "; [ENG-GFX] JP menu-bg sheet $39 repointed at the US linoleum "
@@ -181,15 +178,15 @@ def edit_bank_13(p: Patcher) -> None:
     )
 
 
-def edit_bank_18(p: Patcher) -> None:
-    p.rename(
+def edit_bank_18(patcher: Patcher) -> None:
+    patcher.free(
         "GFX_DC",
         comment=(
             "; [ENG-GFX] JP menu-font sheet $69 repointed at the US font "
             "(GFX_DC, usgfx.asm).",
         ),
     )
-    p.rename(
+    patcher.free(
         "GFX_DD",
         comment=(
             "; [ENG-GFX] JP $6A repointed at the US font (GFX_DD, usgfx.asm); "

@@ -21,9 +21,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from snes_assembly_parser import Source
+from snes_assembly_parser import Assembly, note
 
-from graft import Placement, assemble, collect_names, en_namespace, mirror
+from graft import Relocation, mirror
 
 JPDASM = Path("../jpdasm")  # default JP disassembly (override with --jpdasm)
 OUT = Path("us_bank00.asm")
@@ -59,7 +59,7 @@ BODY_NOTE = (
 
 
 def build(*, changes: bool, jpdasm: Path = JPDASM) -> str:
-    bank00 = Source.from_path(jpdasm / "bank_00.asm")
+    bank00 = Assembly.from_path(jpdasm / "bank_00.asm")
     routine = bank00.extract([ROOT], recursive=True, external=SHARED)
     start = routine.start_address
     if start is None:
@@ -68,23 +68,16 @@ def build(*, changes: bool, jpdasm: Path = JPDASM) -> str:
     if changes:
         for old, new in FONT_EDITS:
             routine.replace(old, new, count=1)
+        routine.lines.insert(0, note(BODY_NOTE))
 
-    text = routine.render(mirror(start))
-    names = collect_names(text)
-    hooks = HOOKS if changes else frozenset()
-    text = en_namespace(text, names, hooks=hooks, shared=SHARED)
-    if changes:
-        text = f"{BODY_NOTE}\n{text}"
-
-    return assemble(
-        HEADER,
-        [
-            Placement(
-                mirror(start),
-                text,
-                "bank-$00 TransferFontToVRAM (mirror of JP $00E596).",
-            )
-        ],
+    relocation = Relocation(HEADER)
+    relocation.place(
+        routine,
+        mirror(start),
+        "bank-$00 TransferFontToVRAM (mirror of JP $00E596).",
+    )
+    return relocation.render(
+        hooks=HOOKS if changes else frozenset(), shared=SHARED
     )
 
 

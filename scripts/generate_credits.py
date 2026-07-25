@@ -21,16 +21,11 @@ form two small edits make it English:
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from snes_assembly_parser import Block, Pool, Source
+from snes_assembly_parser import Assembly, Block, Pool
 
-from graft import Placement, assemble, collect_names, en_namespace, mirror
-
-if TYPE_CHECKING:
-    from snes_assembly_parser import Segment
+from graft import Relocation, mirror
 
 JPDASM = Path("../jpdasm")
 USDASM = Path("../usdasm")
@@ -69,7 +64,6 @@ GROUPS: tuple[tuple[tuple[Block | Pool, ...], tuple[str, ...]], ...] = (
 # these keep ONLY their EN_ names here: base_edits.py puts a landing pad under
 # each bare name in bank_0E, so the bare alias must NOT be redefined here.
 READERS = ("Credits_AddNextAttribution", "Credits_AddEndingSequenceText")
-_POOL_REF = re.compile(r"^[ \t]*pool[ \t]+([A-Za-z_]\w*)", re.MULTILINE)
 
 HEADER = (
     "; english/en_credits.asm -- credits reader + tables relocated to bank "
@@ -81,19 +75,21 @@ HEADER = (
 )
 
 
-def us_glyph_values(us: Source, names: tuple[str, ...]) -> list[list[str]]:
+def us_glyph_values(
+    us_bank: Assembly, names: tuple[str, ...]
+) -> list[list[str]]:
     """The dw operand lists of the named US blocks/pools, in order.
 
     A name is a block, a pool, or (when both exist) the pool's data followed by
-    the block's -- matching how ``Source.concat`` lays them out.
+    the block's -- matching how ``Assembly.concat`` lays them out.
     """
     values: list[list[str]] = []
     for name in names:
         segments = []
-        if name in us.pools:
-            segments.append(us.pool(name, comments=False))
-        if name in us.labels:
-            segments.append(us.block(name, comments=False))
+        if name in us_bank.pools:
+            segments.append(us_bank.pool(name, comments=False))
+        if name in us_bank.labels:
+            segments.append(us_bank.function(name, comments=False))
         for segment in segments:
             values += [
                 line.arguments for line in segment.lines if line.opcode == "dw"
@@ -101,7 +97,7 @@ def us_glyph_values(us: Source, names: tuple[str, ...]) -> list[list[str]]:
     return values
 
 
-def splice_us_glyphs(group: Segment, values: list[list[str]]) -> None:
+def splice_us_glyphs(group: Assembly, values: list[list[str]]) -> None:
     """Overwrite the group's leading ``dw`` values with the US glyph tiles.
 
     The glyph blocks come first in each group and are the same length in JP and
@@ -118,7 +114,7 @@ def splice_us_glyphs(group: Segment, values: list[list[str]]) -> None:
         raise ValueError(msg)
 
 
-def return_long(group: Segment) -> None:
+def return_long(group: Assembly) -> None:
     """Turn the group's final ``RTS`` into ``RTL`` (same size)."""
     for line in reversed(group.lines):
         if line.opcode == "RTS":
@@ -130,56 +126,32 @@ def return_long(group: Segment) -> None:
     raise ValueError(msg)
 
 
-def pool_qualified_names(text: str, base_names: set[str]) -> set[str]:
-    """Add ``Pool_sublabel`` reference names to ``base_names``.
-
-    An asar ``pool Foo`` exposes its ``.bar`` sublabel as ``Foo_bar`` at the
-    reference site; :func:`collect_names` records only the pool base ``Foo``,
-    so the ``EN_`` rename would miss those refs. Find every ``Foo_...`` token
-    for a pool ``Foo`` and add it so it is namespaced with its pool.
-    """
-    names = set(base_names)
-    for pool in _POOL_REF.findall(text):
-        names |= set(re.findall(rf"\b{re.escape(pool)}_\w+", text))
-    return names
-
-
 def build(
     *, changes: bool, jpdasm: Path = JPDASM, usdasm: Path = USDASM
 ) -> str:
-    jp = Source.from_path(jpdasm / "bank_0E.asm")
-    us = Source.from_path(usdasm / "bank_0E.asm")
+    jp_bank = Assembly.from_path(jpdasm / "bank_0E.asm")
+    us_bank = Assembly.from_path(usdasm / "bank_0E.asm")
 
-    rendered: list[tuple[int, str]] = []
+    # Namespaced globally across all groups so a reference in a reader group
+    # resolves to its definition in a data group; credits use landing pads, so
+    # the bare hook names live in bank_0E, not here (no hooks/shared).
+    relocation = Relocation(HEADER)
     for blocks, glyph_blocks in GROUPS:
-        group = jp.concat(list(blocks))
+        group = jp_bank.concat(list(blocks))
         start = group.start_address
         if start is None:
             msg = f"group {blocks[0].name} has no address anchor"
             raise ValueError(msg)
         if changes:
-            splice_us_glyphs(group, us_glyph_values(us, glyph_blocks))
-            if any(b.name in READERS for b in blocks):
+            splice_us_glyphs(group, us_glyph_values(us_bank, glyph_blocks))
+            if any(block.name in READERS for block in blocks):
                 return_long(group)
-        rendered.append((mirror(start), group.render(mirror(start))))
-
-    # One global name set so a reference in a reader group resolves to its
-    # definition in the data group (same as the text engine's namespacing).
-    # Pools are defined in one group and referenced in another, so gather the
-    # Pool_sublabel names across ALL groups' text at once.
-    whole = "\n".join(text for _, text in rendered)
-    names = pool_qualified_names(whole, collect_names(whole))
-    # Credits use landing pads, so the bare names live in bank_0E, not here.
-    hooks: frozenset[str] = frozenset()
-    placements = [
-        Placement(
-            org,
-            en_namespace(text, names, hooks=hooks),
-            f"credits group at mirror of JP ${org - 0x200000:06X}.",
+        relocation.place(
+            group,
+            mirror(start),
+            f"credits group at mirror of JP ${start:06X}.",
         )
-        for org, text in rendered
-    ]
-    return assemble(HEADER, placements)
+    return relocation.render()
 
 
 def main() -> None:

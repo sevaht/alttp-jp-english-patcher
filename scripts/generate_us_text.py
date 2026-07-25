@@ -4,7 +4,7 @@ the expanded English ROM and renamed into the ``EN_`` namespace.
 
 WHAT WE PULL  (verbatim from ../usdasm, the US disassembly, by name)
 -------------------------------------------------------------------
-* The text ENGINE -- ``Source.extract`` starts from the routines we actually
+* The text ENGINE -- ``Assembly.extract`` starts from the routines we actually
   need (``ENGINE_ROOTS``) and recursively follows every reference, so the whole
   live subsystem comes along without us listing it. Dead ``UNREACHABLE_``/
   ``NULL_`` blocks drop out, and their space is reserved with an ``org`` so the
@@ -15,7 +15,7 @@ WHAT WE PULL  (verbatim from ../usdasm, the US disassembly, by name)
 ADDRESSES  (we compute them ourselves -- no assembler)
 ------------------------------------------------------
 Each source line already carries a ``#_AAAAAA:`` anchor, and the gap to the
-next anchor is its byte size. The extracted ``Segment`` keeps those sizes, so
+next anchor is its byte size. The extracted ``Assembly`` keeps those sizes, so
 after any line edit it re-emits the ``#_`` anchors by tracking the PC from the
 target ``org``. Every edit below is byte-neutral, so mirror-placed code
 (engine -> ``$2E``) lands at US address ``+$200000`` exactly -- no cascade; the
@@ -50,19 +50,12 @@ import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from snes_assembly_parser import Source, code_lines, data, datas, notes
+from snes_assembly_parser import Assembly, data, datas, instructions, notes
 
-from graft import (
-    Placement,
-    assemble,
-    collect_names,
-    en_namespace,
-    mirror,
-    substitute,
-)
+from graft import Relocation, mirror, substitute
 
 if TYPE_CHECKING:
-    from snes_assembly_parser import Line, Segment
+    from snes_assembly_parser import Line
 
 USDASM = Path("../usdasm")  # default US disassembly (override with --usdasm)
 OUT = Path("us_text.asm")
@@ -111,11 +104,11 @@ FILTER_NAME_NEW = "\n".join(  # noqa: FLY002
 )
 
 
-def edit_engine(engine: Segment, sizes: dict[str, int]) -> None:
+def edit_engine(engine: Assembly) -> None:
     """Apply the 4-char-name and message-ID graft edits, as line operations.
 
-    ``sizes`` is the engine source's :meth:`Source.instruction_sizes` map,
-    used to size the inserted instructions without a hand-written byte count.
+    Inserted instructions are sized by :func:`instructions` (computed from the
+    opcode), so no hand-written byte count is needed.
     """
     # (1) [NAME] field: JP names are 4 chars; the stock US handler is 6 wide.
     # Read and filter only 4 (US reads 6), copy the 4 real slots (unchanged,
@@ -148,7 +141,7 @@ def edit_engine(engine: Segment, sizes: dict[str, int]) -> None:
                 "; shifts.",
             ]
         )
-        + code_lines(["DEX", "DEX"], sizes)
+        + instructions(["DEX", "DEX"])
         + [data("db $EA, $EA, $EA, $EA, $EA, $EA, $EA, $EA, $EA, $EA")],
     )
     engine.annotate(
@@ -264,7 +257,7 @@ def masks_stub() -> str:
     )
 
 
-def require_start(segment: Segment, what: str) -> int:
+def require_start(segment: Assembly, what: str) -> int:
     """The segment's first anchor address, or a loud failure."""
     start = segment.start_address
     if start is None:
@@ -274,11 +267,11 @@ def require_start(segment: Segment, what: str) -> int:
 
 
 def build(*, changes: bool, usdasm: Path = USDASM) -> str:
-    bank0e = Source.from_path(usdasm / "bank_0E.asm")
-    text = Source.from_path(usdasm / "text.asm")
+    bank_0e = Assembly.from_path(usdasm / "bank_0E.asm")
+    text_asm = Assembly.from_path(usdasm / "text.asm")
 
     # ---- ENGINE: pull the whole live subsystem from ENGINE_ROOTS by refs.
-    engine = bank0e.extract(
+    engine = bank_0e.extract(
         ENGINE_ROOTS,
         recursive=True,
         external=SHARED,
@@ -286,77 +279,65 @@ def build(*, changes: bool, usdasm: Path = USDASM) -> str:
         gap_notes=ENGINE_GAP_NOTES,
     )
     if changes:
-        edit_engine(engine, bank0e.instruction_sizes())
+        edit_engine(engine)
     engine_org = mirror(require_start(engine, "engine"))  # $0EC440 -> $2EC440
 
     # ---- MESSAGES: main table (bank $1C, to its free ROM) + bank_0E overflow.
-    main = text.blocks_until("Message_Data")
-    overflow = text.blocks_until("Message_DataExtra")
+    main = text_asm.blocks_until("Message_Data")
+    overflow = text_asm.blocks_until("Message_DataExtra")
     if changes:
         main.delete_block("Message_000B")  # drop US-only cursor messages,
         main.delete_block("Message_000C")  # so game-code message IDs match JP
         overflow.append(cursor_messages())  # re-appended past JP's ID range
 
-    # ---- render (engine re-caption is a post-render multi-line text edit)
+    # The engine re-caption is a multi-line comment swap -- done on the
+    # engine's rendered text (placed as a str), one of the few pieces that is
+    # not a plain Assembly. One global EN_ namespace keeps cross-block refs
+    # (engine <-> data) in step; the bare hook aliases and override stubs are
+    # part of the graft, so a baseline build emits neither.
     engine_text = engine.render(engine_org)
     if changes:
         engine_text = substitute(engine_text, FILTER_NAME_OLD, FILTER_NAME_NEW)
-    main_text = main.render(MESSAGE_MAIN_ORG)
-    overflow_text = overflow.render(MESSAGE_OVERFLOW_ORG)
-
-    # ---- EN_ namespace: one global name set keeps cross-block refs in step.
-    # Bare hook aliases (and the override stubs below) are part of the graft,
-    # so a baseline build emits neither -- the relocated US code, nothing else.
-    names = (
-        collect_names(engine_text)
-        | collect_names(main_text)
-        | collect_names(overflow_text)
-    )
-    hooks = ENGINE_HOOKS if changes else frozenset()
-    engine_text = en_namespace(engine_text, names, hooks=hooks, shared=SHARED)
-    main_text = en_namespace(main_text, names, shared=SHARED)
-    overflow_text = en_namespace(overflow_text, names, shared=SHARED)
 
     overflow_note = "MESSAGE overflow (US bank_0E)"
-    if changes:
-        overflow_note += " + re-appended cursor prompts."
-    else:
-        overflow_note += "."
+    overflow_note += " + re-appended cursor prompts." if changes else "."
 
-    blocks = [
-        Placement(
-            FONT_ORG,
-            THE_FONT,
-            "Our VWF text font (font.2bpp); read by the bank_00 upload.",
-        ),
-        Placement(
-            engine_org,
-            engine_text,
-            "Text ENGINE, mirror-placed from US bank_0E $0EC440.",
-        ),
-    ]
+    relocation = Relocation(header(changes=changes))
+    relocation.place(
+        THE_FONT,
+        FONT_ORG,
+        "Our VWF text font (font.2bpp); read by the bank_00 upload.",
+        namespace=False,  # raw blob; TheFont/TheFont_end stay bare (shared)
+    )
+    relocation.place(
+        engine_text,
+        engine_org,
+        "Text ENGINE, mirror-placed from US bank_0E $0EC440.",
+    )
     if changes:
-        blocks += [
-            Placement(
-                mirror(DECOMPRESS_HOOK),
-                decompress_stub(),
-                "Hook: DecompressFontGFX (mirror of JP $0EF572).",
-            ),
-            Placement(
-                mirror(MASKS_HOOK),
-                masks_stub(),
-                "Hook: BuildSomeTextMasks (mirror of JP $0EFCB2).",
-            ),
-        ]
-    blocks += [
-        Placement(
-            MESSAGE_MAIN_ORG,
-            main_text,
-            "MESSAGE data (US text.asm bank $1C); free bank.",
-        ),
-        Placement(MESSAGE_OVERFLOW_ORG, overflow_text, overflow_note),
-    ]
-    return assemble(header(changes=changes), blocks)
+        # The override stubs are hand-written in final form (their own bare
+        # hook alias + EN_ name), so they are emitted verbatim.
+        relocation.place(
+            decompress_stub(),
+            mirror(DECOMPRESS_HOOK),
+            "Hook: DecompressFontGFX (mirror of JP $0EF572).",
+            namespace=False,
+        )
+        relocation.place(
+            masks_stub(),
+            mirror(MASKS_HOOK),
+            "Hook: BuildSomeTextMasks (mirror of JP $0EFCB2).",
+            namespace=False,
+        )
+    relocation.place(
+        main,
+        MESSAGE_MAIN_ORG,
+        "MESSAGE data (US text.asm bank $1C); free bank.",
+    )
+    relocation.place(overflow, MESSAGE_OVERFLOW_ORG, overflow_note)
+    return relocation.render(
+        hooks=ENGINE_HOOKS if changes else frozenset(), shared=SHARED
+    )
 
 
 def header(*, changes: bool) -> str:

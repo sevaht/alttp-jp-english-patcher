@@ -12,9 +12,12 @@ The other relocated subsystems sit at their ``+$200000`` mirror address. The
 file-select cannot: two of its routines carry JP's save-backup logic and are
 bigger than their US slots (``FileSelect_InitializeGFX`` 274 B vs the 85 B US
 slot; ``InitializeSaveFile`` 401 B vs 176 B), so at mirror addresses they would
-overrun the next routine. Instead every block is packed contiguously from
-``$2C8000`` in ``BLOCK_ORDER`` -- referenced symbolically, so the exact address
-does not matter, only that nothing overlaps.
+overrun the next routine. Instead the whole live subsystem is pulled by
+recursion from its entry points (``HOOKS``) and packed contiguously from
+``$2C8000`` in US source order -- referenced symbolically, so the absolute
+addresses do not matter, only that nothing overlaps and that the few
+fall-through routines stay next to their successor (source order preserves
+both).
 
 CHANGES (default form; ``--baseline`` emits the pure US/JP relocation)
 ---------------------------------------------------------------------
@@ -31,110 +34,23 @@ CHANGES (default form; ``--baseline`` emits the pure US/JP relocation)
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from snes_assembly_parser import Source, code_lines
+from snes_assembly_parser import Assembly, Block, instructions
 
-from graft import Placement, assemble, collect_names, en_namespace
-
-if TYPE_CHECKING:
-    from snes_assembly_parser import Segment
+from graft import Relocation
 
 USDASM = Path("../usdasm")
 JPDASM = Path("../jpdasm")
 OUT = Path("us_menu.asm")
 ORG = 0x2C8000
 
-# Blocks packed contiguously from $2C8000, in this order (US source order with
-# the JP-restored save routines slotted in and tilemaps grouped at the tail).
-BLOCK_ORDER = (
-    "FileSelect_FairyY",
-    "Module01_FileSelect",
-    "FileSelect_InitializeGFX",
-    "FileSelect_ReInitSaveFlagsAndGraphics",
-    "ReinitializeFileSelectGraphics",
-    "FileSelect_TriggerStripesAndAdvance",
-    "FileSelect_Main",
-    "FileSelect_SetUpNamesStripes",
-    "FileSelect_HandleInput",
-    "CopySaveToWRAM",
-    "Module02_CopyFile",
-    "CopyFile_FindFileIndices",
-    "KILLFile_FindFileIndices",
-    "CopyFile_ChooseSelection",
-    "FileSelect_TriggerTheStripes",
-    "CopyFile_ChooseTarget",
-    "CopyFile_ConfirmSelection",
-    "FilePicker_DeleteHeaderStripe",
-    "CopyFile_FairyHeight",
-    "CopyFile_CopyToMenuStripe",
-    "CopyFile_TargetStripeOffsetAdjuster",
-    "CopyFile_NameStripeBufferOffset",
-    "CopyFile_SelectionAndBlinker",
-    "CopyFile_ConfirmationStripes",
-    "CopyFile_TargetFairyX",
-    "CopyFile_TargetFairyY",
-    "CopyFile_BufferOffset",
-    "CopyFile_TargetNumerals",
-    "CopyFile_TargetSelectionAndBlink",
-    "CopyFile_HandleConfirmation",
-    "CopyFile_CopyData",
-    "KILLFile_FairyY",
-    "KILL_OK_stripes",
-    "KILL_OK_FileNameStripesAdjustment",
-    "Module03_KILLFile",
-    "KILLFile_SetUp",
-    "KILLFile_HandleSelection",
-    "KILLFile_HandleConfirmation",
-    "KILLFile_ChooseTarget",
-    "KILLFile_VerifyDeletion",
-    "FileSelect_CopyNameToStripes",
-    "FileSelect_DrawLink",
-    "FileSelect_DrawFairy",
-    "FileSelect_DrawDeaths",
-    "Module04_NameFile",
-    "NameFile_EraseSave",
-    "NameFile_MakeScreenVisible",
-    "Intro_SetStripesAndAdvance",
-    "CopyFile_FairyIndent",
-    "KILLFile_FairyX",
-    "NameFile_CharacterLayout",
-    "NameFile_CursorPositionX",
-    "NameFile_CursorIndexMovementX",
-    "NameFile_CursorIndexBoundaryX",
-    "NameFile_CursorIndexWrapX",
-    "NameFile_CursorPositionY",
-    "NameFile_CursorIndexMovementY",
-    "NameFile_CursorIndexBoundaryY",
-    "NameFile_CursorStickY",
-    "NameFile_YtoXIndexOffset",
-    "NameFile_HeartXPosition",
-    "NameFile_CursorMovement",
-    "NameFile_DoTheNaming",
-    "InitializeSaveFile",
-    "NameFile_CheckForScrollInputX",
-    "NameFile_CheckForScrollInputY",
-    "NameFile_DrawSelectedCharacter",
-    "IntroLogoTilemap",
-    "FileSelectTilemap",
-    "FileSelectNamesTilemap",
-    "FileSelectKILLFileTilemap",
-    "KILLFile_BlankNameStripes",
-    "FileSelectCopyFileTilemap",
-    "CopyFile_HeaderStripe",
-    "CopyFile_TargetHeaderStripes",
-    "NamePlayerTilemap",
-    "FileSelect_UploadLinoleum",
-    "FileSelect_UploadFancyBackground",
-    "NameFile_FillBackground",
-    "FancyBackgroundTileMap",
-    "IRQActiveHandler",
-)
-
-# Blocks referenced by un-relocated code (module dispatch, save-copy, tilemap
-# uploads), so they keep their bare JP name as an alias alongside the EN_ name.
+# The file-select's entry points -- every symbol un-relocated code reaches into
+# this subsystem by (module dispatch, save-copy, tilemap uploads). These serve
+# double duty: they are the recursion ROOTS the whole live subsystem is pulled
+# from (``build`` closes over their references, so we never enumerate the
+# transitive helpers/data tables), and they are the HOOKS that keep their bare
+# JP name as an alias alongside the EN_ name so unmodified callers resolve.
 HOOKS = frozenset(
     {
         "Module01_FileSelect",
@@ -232,39 +148,34 @@ HEADER = (
 )
 
 
-def edit_initialize_gfx(block: Segment, sizes: dict[str, int]) -> None:
+def edit_initialize_gfx(block: Assembly) -> None:
     """JP ``FileSelect_InitializeGFX`` -> English (name-banner + BG3 setup)."""
     # STZ.w $0AB6 -> LDA.b #$06 / STA.w $0AB6 / STA.w $0710
     block.delete("STZ.w $0AB6", "JSL PaletteLoad_UnderworldSet")
     block.insert_after(
         "STA.w $0AA9",
-        code_lines(["LDA.b #$06", "STA.w $0AB6", "STA.w $0710"], sizes),
+        instructions(["LDA.b #$06", "STA.w $0AB6", "STA.w $0710"]),
     )
     # the LDA.b #$01 before STA.w $0AB2 (not the later one) -> LDA.b #$00
     block.delete("LDA.b #$01", "STA.w $0AB2")
-    block.insert_after(
-        "JSL PaletteLoad_OWBG3", code_lines(["LDA.b #$00"], sizes)
-    )
+    block.insert_after("JSL PaletteLoad_OWBG3", instructions(["LDA.b #$00"]))
     # add LDA.b #$51 / STA.w $0AA2 after STA.w $0AA1
     block.insert_after(
-        "STA.w $0AA1", code_lines(["LDA.b #$51", "STA.w $0AA2"], sizes)
+        "STA.w $0AA1", instructions(["LDA.b #$51", "STA.w $0AA2"])
     )
 
 
-def edit_erase(block: Segment, sizes: dict[str, int]) -> None:
+def edit_erase(block: Assembly) -> None:
     """JP ``NameFile_EraseSave`` -> English (4-char blank fill + flags)."""
     # move STZ.w $0B10 from below $0B12 to right after STA.w $0128
     block.delete("STZ.w $0B10", "STZ.w $0B15")
-    block.insert_after("STA.w $0128", code_lines(["STZ.w $0B10"], sizes))
+    block.insert_after("STA.w $0128", instructions(["STZ.w $0B10"]))
     block.replace("LDA.b #$3E", "LDA.b #$83", count=1)
     block.replace("LDA.w #$019C", "LDA.w #$01F0", count=1)
     block.replace("LDA.w #$018C", "LDA.w #$00A9", count=1)
 
 
-def edit_name_player_tilemap(
-    block: Segment,
-    sizes: dict[str, int],  # noqa: ARG001  (uniform COMPLEX_EDITS signature)
-) -> None:
+def edit_name_player_tilemap(block: Assembly) -> None:
     """Narrow the name row of ``NamePlayerTilemap`` for the 4-char name.
 
     The 7-value tile row (a substring of the 8-value row above it, so not
@@ -292,58 +203,62 @@ COMPLEX_EDITS = {
 
 
 def block_segment(
-    name: str, us: Source, jp: Source, *, changes: bool
-) -> Segment:
+    name: str, us_bank: Assembly, jp_bank: Assembly, *, changes: bool
+) -> Assembly:
     """The one block ``name``: from CUSTOM text, or US/JP with its edits.
 
     A routine with an asar ``pool name`` (scoped ``.sublabel`` data) gets the
     pool emitted before the routine, matching the source layout.
     """
     if name in CUSTOM:
-        return Source.from_content(CUSTOM[name].split("\n")).block(
+        return Assembly.from_content(CUSTOM[name].split("\n")).function(
             name, comments=False
         )
-    source = jp if name in JP_BLOCKS else us
+    source = jp_bank if name in JP_BLOCKS else us_bank
     lines = []
     if name in source.pools:
         lines += source.pool(name, comments=False).lines
-    lines += source.block(name, comments=False).lines
-    segment = source._segment(lines)
+    lines += source.function(name, comments=False).lines
+    segment = Assembly(lines)
     if changes:
         for old, new, count in SIMPLE_EDITS.get(name, []):
             segment.replace(old, new, count)
         if name in COMPLEX_EDITS:
-            COMPLEX_EDITS[name](segment, source.instruction_sizes())
+            COMPLEX_EDITS[name](segment)
     return segment
-
-
-def sublabel_names(text: str, base_names: set[str]) -> set[str]:
-    """Add ``Label_sublabel`` reference tokens (asar pool refs) to the set."""
-    names = set(base_names)
-    for base in base_names:
-        names |= set(re.findall(rf"\b{re.escape(base)}_\w+", text))
-    return names
 
 
 def build(
     *, changes: bool, usdasm: Path = USDASM, jpdasm: Path = JPDASM
 ) -> str:
-    us = Source.from_path(usdasm / "bank_0C.asm")
-    jp = Source.from_path(jpdasm / "bank_0C.asm")
+    us_bank = Assembly.from_path(usdasm / "bank_0C.asm")
+    jp_bank = Assembly.from_path(jpdasm / "bank_0C.asm")
+
+    # Pull the whole live subsystem by recursion from the entry points, so the
+    # transitive helpers and data tables come along without enumerating them.
+    # Emitted in source order: absolute addresses do not matter (every
+    # reference is symbolic), and source order also preserves the few blocks
+    # that fall through into the next routine (a conditional branch or a JSR
+    # with no following return) -- those are adjacent in the US source, so
+    # ``closure``'s source ordering keeps them adjacent here. The two
+    # label-less helpers have no symbol to recurse to, so they are CUSTOM.
+    reachable = us_bank.closure(sorted(HOOKS), recursive=True)
+    block_order = list(
+        dict.fromkeys(
+            entry.name for entry in reachable if isinstance(entry, Block)
+        )
+    )
+    if changes:
+        # the two helpers/handler are part of the graft
+        block_order += list(CUSTOM)
 
     lines = []
-    for name in BLOCK_ORDER:
-        if name in CUSTOM and not changes:
-            continue  # the two helpers/handler are part of the graft
-        lines += block_segment(name, us, jp, changes=changes).lines
-    segment = us._segment(lines)
+    for name in block_order:
+        lines += block_segment(name, us_bank, jp_bank, changes=changes).lines
 
-    text = segment.render(ORG)
-    hooks = HOOKS if changes else frozenset()
-    text = en_namespace(
-        text, sublabel_names(text, collect_names(text)), hooks=hooks
-    )
-    return assemble(HEADER, [Placement(ORG, text, "file-select, packed.")])
+    relocation = Relocation(HEADER)
+    relocation.place(Assembly(lines), ORG, "file-select, packed.")
+    return relocation.render(hooks=HOOKS if changes else frozenset())
 
 
 def main() -> None:

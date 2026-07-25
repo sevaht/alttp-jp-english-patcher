@@ -20,7 +20,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from snes_assembly_parser import Source
+from snes_assembly_parser import Assembly
 
 from base_edits import apply_all
 
@@ -31,17 +31,18 @@ def signature_hash(path: Path) -> str:
     """SHA-256 of a bank's content-line signature (comments/blanks ignored)."""
     lines = [
         f"{line.label or ''}|{line.opcode or ''}|{','.join(line.arguments)}"
-        for line in Source.from_path(path).lines
+        for line in Assembly.from_path(path).lines
         if line.has_content
     ]
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 def compute(src: Path) -> dict[str, str]:
-    with tempfile.TemporaryDirectory() as tmp:
-        banks = apply_all(src, Path(tmp))
+    with tempfile.TemporaryDirectory() as temp_dir:
+        banks = apply_all(src, Path(temp_dir))
         return {
-            bank: signature_hash(Path(tmp) / f"{bank}.asm") for bank in banks
+            bank: signature_hash(Path(temp_dir) / f"{bank}.asm")
+            for bank in banks
         }
 
 

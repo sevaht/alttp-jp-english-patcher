@@ -22,16 +22,11 @@ default (changes) form:
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from snes_assembly_parser import Line, Source
+from snes_assembly_parser import Assembly, Line, instructions, note
 
-from graft import Placement, assemble, collect_names, en_namespace, mirror
-
-if TYPE_CHECKING:
-    from snes_assembly_parser import Segment
+from graft import Relocation, mirror
 
 JPDASM = Path("../jpdasm")
 USDASM = Path("../usdasm")
@@ -85,7 +80,7 @@ HEADER = (
 )
 
 
-def return_long(segment: Segment) -> None:
+def return_long(segment: Assembly) -> None:
     """Replace the final ``RTS`` with ``PLB``+``RTL`` (DBR restore).
 
     The body ran under DBR=$2D (set by its trampoline); ``PLB`` pops the
@@ -106,38 +101,21 @@ def return_long(segment: Segment) -> None:
     raise ValueError(msg)
 
 
-def trampolines() -> str:
-    """The four DBR-setting redirect stubs, placed at ``TRAMPOLINE_ORG``.
+def trampolines() -> Assembly:
+    """The four DBR-setting redirect stubs (placed at ``TRAMPOLINE_ORG``).
 
-    Bare names -- :func:`en_namespace` adds the ``EN_`` prefix uniformly.
+    Bare names -- :meth:`Relocation.render` adds the ``EN_`` prefix uniformly;
+    the anchors are stamped when the piece is placed, so the stubs just declare
+    ``PHB``/``PHK``/``PLB`` + a ``JMP`` to the relocated body.
     """
     lines: list[Line] = []
-    pc = TRAMPOLINE_ORG
     for name in ENTRIES:
-        lines.append(Line.from_line(f"{name}:"))
-        for opcode in ("PHB", "PHK", "PLB"):
-            lines.append(Line.from_line(f"#_{pc:06X}: {opcode}"))
-            pc += 1
-        lines.append(Line.from_line(f"#_{pc:06X}: JMP.w {name}_body"))
-        pc += 3
-    return "\n".join(str(line) for line in lines)
+        lines.append(note(f"{name}:"))
+        lines += instructions(["PHB", "PHK", "PLB", f"JMP.w {name}_body"])
+    return Assembly(lines)
 
 
-def sublabel_names(text: str, base_names: set[str]) -> set[str]:
-    """Add ``Label_sublabel`` reference tokens to ``base_names``.
-
-    A ``.sub`` sublabel under top-level ``Label:`` is referenced as
-    ``Label_sub`` (e.g. ``ItemIcons_bottles``); :func:`collect_names` records
-    only ``Label``, and the ``EN_`` rename's word boundary would skip the
-    ``Label_sub`` form. Add each such token so it namespaces with its label.
-    """
-    names = set(base_names)
-    for base in base_names:
-        names |= set(re.findall(rf"\b{re.escape(base)}_\w+", text))
-    return names
-
-
-def duplicate_mirror(region: Segment) -> None:
+def duplicate_mirror(region: Assembly) -> None:
     """Duplicate the US ``ItemMenuNameText_Mirror`` rows to JP's 4-row slot.
 
     The US table is 2 ``dw`` rows; the item indexing wants a 4-row slot, so the
@@ -145,14 +123,14 @@ def duplicate_mirror(region: Segment) -> None:
     following blocks cascade forward by the added $20 bytes).
     """
     start = next(
-        i
-        for i, line in enumerate(region.lines)
+        index
+        for index, line in enumerate(region.lines)
         if line.label and line.label.endswith("ItemMenuNameText_Mirror")
     )
     end = next(
-        i
-        for i in range(start + 1, len(region.lines))
-        if region.lines[i].is_top_level_label
+        index
+        for index in range(start + 1, len(region.lines))
+        if region.lines[index].is_top_level_label
     )
     us_mirror_rows = 2  # US table is 2 dw rows; JP slot wants 4
     rows = [line for line in region.lines[start:end] if line.opcode == "dw"]
@@ -165,11 +143,11 @@ def duplicate_mirror(region: Segment) -> None:
     region.lines[end:end] = copies
 
 
-def patch_ability_text(region: Segment, jp: Source) -> None:
+def patch_ability_text(region: Assembly, jp_bank: Assembly) -> None:
     """Rows 10-11 of ``AbilityText`` keep the JP tile values (not US)."""
     jp_rows = [
         line.arguments
-        for line in jp.block("AbilityText", comments=False).lines
+        for line in jp_bank.function("AbilityText", comments=False).lines
         if line.opcode == "dw"
     ]
     row = 0
@@ -189,18 +167,23 @@ def patch_ability_text(region: Segment, jp: Source) -> None:
 def build(
     *, changes: bool, jpdasm: Path = JPDASM, usdasm: Path = USDASM
 ) -> str:
-    us = Source.from_path(usdasm / "bank_0D.asm")
-    jp = Source.from_path(jpdasm / "bank_0D.asm")
+    us_bank = Assembly.from_path(usdasm / "bank_0D.asm")
+    jp_bank = Assembly.from_path(jpdasm / "bank_0D.asm")
 
-    rendered: list[tuple[int, str]] = []
+    # Every piece lands at its US mirror address; one global EN_ namespace
+    # binds the trampolines' JMP, the bodies, and the data tables together.
+    relocation = Relocation(HEADER)
+
+    def place(body: Assembly, org: int) -> None:
+        relocation.place(body, org, f"item-menu @ ${org:06X}.")
 
     # ---- redirect trampolines (changes only) ----
     if changes:
-        rendered.append((TRAMPOLINE_ORG, trampolines()))
+        place(trampolines(), TRAMPOLINE_ORG)
 
     # ---- bodies/data, each at its US mirror address ----
     for us_name, en_name, long_return in BODIES:
-        body = us.block(us_name, comments=False)
+        body = us_bank.function(us_name, comments=False)
         start = body.start_address
         if start is None:
             msg = f"{us_name} has no address anchor"
@@ -209,39 +192,29 @@ def build(
             return_long(body)
         if en_name != us_name:
             body.lines[0].label = en_name  # rename the routine label
-        rendered.append((mirror(start), body.render(mirror(start))))
+        place(body, mirror(start))
 
     # ---- contiguous name-text region (Mirror expansion cascades rest) ----
-    region = us.concat([*NAMETEXT])
+    region = us_bank.concat([*NAMETEXT])
     region_start = region.start_address
     if region_start is None:
         msg = "name-text region has no address anchor"
         raise ValueError(msg)
     if changes:
         duplicate_mirror(region)
-        patch_ability_text(region, jp)
-    rendered.append(
-        (mirror(region_start), region.render(mirror(region_start)))
-    )
+        patch_ability_text(region, jp_bank)
+    place(region, mirror(region_start))
 
     # ---- cursor table: US mirror shifted by the Mirror expansion ($20) ----
-    cursor = us.block(CURSOR_TABLE, comments=False)
+    cursor = us_bank.function(CURSOR_TABLE, comments=False)
     cursor_start = cursor.start_address
     if cursor_start is None:
         msg = f"{CURSOR_TABLE} has no address anchor"
         raise ValueError(msg)
     shift = 0x20 if changes else 0  # Mirror grew by $20 (2 rows)
-    cursor_org = mirror(cursor_start) + shift
-    rendered.append((cursor_org, cursor.render(cursor_org)))
+    place(cursor, mirror(cursor_start) + shift)
 
-    # ---- one global EN_ namespace across all pieces (+ sublabel refs) ----
-    whole = "\n".join(text for _, text in rendered)
-    names = sublabel_names(whole, collect_names(whole))
-    placements = [
-        Placement(org, en_namespace(text, names), f"item-menu @ ${org:06X}.")
-        for org, text in rendered
-    ]
-    return assemble(HEADER, placements)
+    return relocation.render()
 
 
 def main() -> None:
