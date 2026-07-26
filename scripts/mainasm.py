@@ -3,7 +3,8 @@
 
 Inserts, right after the last bank include (``incsrc "bank_1F.asm"``):
 
-* the ``incsrc "english/*.asm"`` lines that pull in the relocated subsystems,
+* the ``incsrc "bank_2X.asm"`` lines that pull in the graft's expanded-ROM
+  banks (bank_20 .. bank_2E), beside the base bank_00 .. bank_1F,
 * the 2 MB ROM padding + SNES header size byte the expansion needs (so the
   checksum is a plain byte-sum every emulator agrees on).
 
@@ -19,26 +20,30 @@ import sys
 from pathlib import Path
 
 ANCHOR = 'incsrc "bank_1F.asm"'
-MARKER = 'incsrc "english/us_text.asm"'
+MARKER = 'incsrc "bank_20.asm"'
 
-# Order matters: us_text (engine) defines symbols the others reference.
-ENGLISH_INCLUDES = (
-    "us_text.asm",
-    "us_menu.asm",
-    "en_item_menu.asm",
-    "en_credits.asm",
-    "us_bank00.asm",
-    "usfs_gfx.asm",
-    "usgfx.asm",
+# The graft's expanded-ROM banks, included right after the base banks so the
+# fork reads bank_00 .. bank_1F (base) then bank_20 .. bank_2E (graft). asar
+# resolves the cross-bank EN_ references across all includes, so the order is
+# immaterial.
+GRAFT_BANKS = (
+    "bank_20.asm",  # our VWF font + relocated TransferFontToVRAM
+    "bank_22.asm",  # message data (main table)
+    "bank_23.asm",  # message data (overflow)
+    "bank_26.asm",  # US menu/HUD + file-select font & background graphics
+    "bank_27.asm",  # file-select US palette overlay + palette data
+    "bank_2C.asm",  # file-select / copy / erase / name-entry
+    "bank_2D.asm",  # item menu
+    "bank_2E.asm",  # text engine (+ override stubs) and credits
 )
 
 BLOCK = (
     "",
-    *(f'incsrc "english/{name}"' for name in ENGLISH_INCLUDES),
+    *(f'incsrc "{name}"' for name in GRAFT_BANKS),
     "",
     "; [ENG-FS] Pad the ROM up to a clean 2 MB (power-of-2). The English graft"
     " expands the ROM",
-    "; into banks $20-$2A, leaving it at a non-power-of-2 size (~0x150000)."
+    "; into banks $20-$2E, leaving it at a non-power-of-2 size (~0x150000)."
     " The SNES header",
     "; checksum for a non-power-of-2 ROM is computed by a mirror-and-sum"
     " algorithm that asar and",
@@ -46,10 +51,10 @@ BLOCK = (
     ' "invalid checksum".',
     "; Padding to exactly 2 MB makes the checksum a plain byte-sum that"
     " everyone agrees on, so",
-    "; --fix-checksum writes a value snes9x accepts. Banks $2B-$3F are"
-    " currently unused ($00 fill);",
-    "; all are valid LoROM space in a 2 MB ROM and freely usable for future"
-    " English content.",
+    "; --fix-checksum writes a value snes9x accepts. The gaps between the"
+    " graft banks ($21, $24-$25,",
+    "; $28-$2B, $2F-$3F) are unused ($00 fill) -- valid LoROM space in a 2 MB"
+    " ROM, free for future use.",
     "org $3FFFFF",
     "db $FF",
     "",

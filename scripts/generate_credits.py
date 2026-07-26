@@ -128,7 +128,7 @@ def return_long(group: Assembly) -> None:
 
 def build(
     *, changes: bool, jpdasm: Path = JPDASM, usdasm: Path = USDASM
-) -> str:
+) -> Relocation:
     jp_bank = Assembly.from_path(jpdasm / "bank_0E.asm")
     us_bank = Assembly.from_path(usdasm / "bank_0E.asm")
 
@@ -151,7 +151,7 @@ def build(
             mirror(start),
             f"credits group at mirror of JP ${start:06X}.",
         )
-    return relocation.render()
+    return relocation
 
 
 def main() -> None:
@@ -169,7 +169,7 @@ def main() -> None:
     args.out.write_text(
         build(
             changes=not args.baseline, jpdasm=args.jpdasm, usdasm=args.usdasm
-        )
+        ).render()
     )
     mode = "baseline" if args.baseline else "with changes"
     print(f"wrote {args.out} ({mode})")

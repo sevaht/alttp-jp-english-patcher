@@ -266,7 +266,7 @@ def require_start(segment: Assembly, what: str) -> int:
     return start
 
 
-def build(*, changes: bool, usdasm: Path = USDASM) -> str:
+def build(*, changes: bool, usdasm: Path = USDASM) -> Relocation:
     bank_0e = Assembly.from_path(usdasm / "bank_0E.asm")
     text_asm = Assembly.from_path(usdasm / "text.asm")
 
@@ -302,7 +302,11 @@ def build(*, changes: bool, usdasm: Path = USDASM) -> str:
     overflow_note = "MESSAGE overflow (US bank_0E)"
     overflow_note += " + re-appended cursor prompts." if changes else "."
 
-    relocation = Relocation(header(changes=changes))
+    relocation = Relocation(
+        header(changes=changes),
+        hooks=ENGINE_HOOKS if changes else frozenset(),
+        shared=SHARED,
+    )
     relocation.place(
         THE_FONT,
         FONT_ORG,
@@ -335,9 +339,7 @@ def build(*, changes: bool, usdasm: Path = USDASM) -> str:
         "MESSAGE data (US text.asm bank $1C); free bank.",
     )
     relocation.place(overflow, MESSAGE_OVERFLOW_ORG, overflow_note)
-    return relocation.render(
-        hooks=ENGINE_HOOKS if changes else frozenset(), shared=SHARED
-    )
+    return relocation
 
 
 def header(*, changes: bool) -> str:
@@ -378,7 +380,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(build(changes=not args.baseline, usdasm=args.usdasm))
+    args.out.write_text(
+        build(changes=not args.baseline, usdasm=args.usdasm).render()
+    )
     mode = "baseline" if args.baseline else "with changes"
     print(f"wrote {args.out} ({mode})")
 

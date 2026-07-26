@@ -7,16 +7,16 @@ grafting in the US ROM's English text/menu/graphics subsystems.
 
 All the generative machinery lives here. Running it deploys a clean result into
 the target disassembly, so that repository stays free of this generator's noise:
-it ends up with just the hooked banks, the `english/*.asm` sources, and the
-build tooling.
+it ends up with just the hooked base banks, the graft's `bank_20`..`bank_2E`
+banks beside them, and the build tooling.
 
 ```
   this repo (patcher)                         target repo (jpdasm fork)
   ┌───────────────────┐   ./apply.sh          ┌───────────────────────────┐
-  │ scripts/  (python)│  ── --target ───────▶ │ bank_00/0C/0D/0E/13/18/1C  │ hooked
-  │ payload/ (2 asm)  │                        │ english/*.asm              │ deployed
-  │ apply.sh          │   fetches usdasm +     │ main.asm                   │ patched
-  │ extract/build     │   jpdasm + parser lib  │ extract_english_assets.py  │ + build tool
+  │ scripts/ (7 gens) │  ── --target ───────▶ │ bank_00..bank_1F  (hooked) │ base
+  │ apply.sh          │                        │ bank_20..bank_2E  (graft)  │ deployed
+  │ extract/build     │   fetches usdasm +     │ main.asm                   │ patched
+  │                   │   jpdasm + parser lib  │ extract_english_assets.py  │ + build tool
   └───────────────────┘   into .deps/          └───────────────────────────┘
 ```
 
@@ -43,9 +43,9 @@ assembly changes.
 | Step | Script | Result in the target |
 | --- | --- | --- |
 | Hook base banks | `scripts/base_edits.py` | `bank_00/0C/0D/0E/13/18/1C.asm` gain the function-repointing hooks |
-| Generate subsystems | the five `scripts/generate_*.py` | `english/{us_text,us_bank00,en_credits,en_item_menu,us_menu}.asm` (relocated US/JP code) |
-| Deploy assets | `apply.sh` | the hand-maintained `english/{usgfx,usfs_gfx}.asm` + `extract_english_assets.py` + `build_english_rom.sh` |
-| Patch main | `scripts/mainasm.py` | `main.asm` gets the english includes + 2 MB padding |
+| Generate graft banks | `scripts/generate_banks.py` (drives the seven `generate_*.py`) | `bank_20/22/23/2C/2D/2E.asm` (relocated US/JP code, grouped by bank) |
+| Deploy tooling | `apply.sh` | `extract_english_assets.py` + `build_english_rom.sh` |
+| Patch main | `scripts/mainasm.py` | `main.asm` gets the `bank_2X` includes + 2 MB padding |
 | Ignore binaries | `scripts/gitignore.py` | `.gitignore` excludes the ROM-derived `english/*` blobs |
 
 ## Layout
@@ -53,17 +53,19 @@ assembly changes.
 ```
 apply.sh                     the one entry point (orchestrator)
 scripts/                     the generator toolkit
-  graft.py  patch.py         relocation + base-edit primitives
-  generate_us_text.py        US text engine     -> us_text.asm ($2E)
-  generate_bank00.py         JP bank-00 font    -> us_bank00.asm ($20)
-  generate_credits.py        JP/US credits      -> en_credits.asm ($2E)
-  generate_item_menu.py      US/JP item menu    -> en_item_menu.asm ($2D)
-  generate_menu.py           US/JP file-select  -> us_menu.asm ($2C)
-  base_edits.py              declares every base-bank hook
+  graft.py                   relocation + EN_ namespacing + write_banks
+  generate_banks.py          drives the seven below, groups pieces by bank
+  generate_us_text.py        US text engine     -> $2E (+ font $20, msgs $22/$23)
+  generate_bank00.py         JP bank-00 font    -> $20
+  generate_credits.py        JP/US credits      -> $2E
+  generate_item_menu.py      US/JP item menu    -> $2D
+  generate_menu.py           US/JP file-select  -> $2C
+  generate_gfx.py            US menu/FS graphics -> $26
+  generate_fs_palette.py     US file-select palette -> $27
+  base_edits.py              declares every base-bank hook (library Patcher)
   mainasm.py  gitignore.py   target main.asm / .gitignore patchers
   verify_base.py             regression guard (frozen hashes)
   reference_hashes.txt       expected base-edit signatures
-payload/                     hand-maintained english/*.asm (usgfx, usfs_gfx) deployed verbatim
 extract_english_assets.py    ROM-derived binary extractor (deployed to target)
 build_english_rom.sh         one-command target build (deployed to target)
 checks  pyproject.toml       lint/typecheck the scripts (needs uv)

@@ -230,7 +230,7 @@ def block_segment(
 
 def build(
     *, changes: bool, usdasm: Path = USDASM, jpdasm: Path = JPDASM
-) -> str:
+) -> Relocation:
     us_bank = Assembly.from_path(usdasm / "bank_0C.asm")
     jp_bank = Assembly.from_path(jpdasm / "bank_0C.asm")
 
@@ -256,9 +256,9 @@ def build(
     for name in block_order:
         lines += block_segment(name, us_bank, jp_bank, changes=changes).lines
 
-    relocation = Relocation(HEADER)
+    relocation = Relocation(HEADER, hooks=HOOKS if changes else frozenset())
     relocation.place(Assembly(lines), ORG, "file-select, packed.")
-    return relocation.render(hooks=HOOKS if changes else frozenset())
+    return relocation
 
 
 def main() -> None:
@@ -272,7 +272,7 @@ def main() -> None:
     args.out.write_text(
         build(
             changes=not args.baseline, usdasm=args.usdasm, jpdasm=args.jpdasm
-        )
+        ).render()
     )
     print(f"wrote {args.out} ({'baseline' if args.baseline else 'changes'})")
 

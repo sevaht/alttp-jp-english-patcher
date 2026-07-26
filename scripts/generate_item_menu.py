@@ -166,7 +166,7 @@ def patch_ability_text(region: Assembly, jp_bank: Assembly) -> None:
 
 def build(
     *, changes: bool, jpdasm: Path = JPDASM, usdasm: Path = USDASM
-) -> str:
+) -> Relocation:
     us_bank = Assembly.from_path(usdasm / "bank_0D.asm")
     jp_bank = Assembly.from_path(jpdasm / "bank_0D.asm")
 
@@ -214,7 +214,7 @@ def build(
     shift = 0x20 if changes else 0  # Mirror grew by $20 (2 rows)
     place(cursor, mirror(cursor_start) + shift)
 
-    return relocation.render()
+    return relocation
 
 
 def main() -> None:
@@ -232,7 +232,7 @@ def main() -> None:
     args.out.write_text(
         build(
             changes=not args.baseline, jpdasm=args.jpdasm, usdasm=args.usdasm
-        )
+        ).render()
     )
     mode = "baseline" if args.baseline else "with changes"
     print(f"wrote {args.out} ({mode})")

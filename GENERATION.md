@@ -9,11 +9,11 @@ diff of the base-assembly changes.
 ## The two repositories
 
 * **This repo (patcher)** — all the generative work: the Python toolkit, the
-  hand-maintained `english/*.asm` payload (usgfx/usfs_gfx), the asset
-  extractor, and `apply.sh`.
+  the asset extractor, and `apply.sh`.
 * **The target (jpdasm fork)** — a clean fork of upstream `jpdasm`. After
-  `apply.sh` it is a functional English translation: hooked banks, the
-  `english/` sources, a patched `main.asm`, and the build tooling. None of this
+  `apply.sh` it is a functional English translation: the base banks hooked in
+  place, the graft's expanded-ROM banks `bank_20.asm` .. `bank_2E.asm` sitting
+  beside them, a patched `main.asm`, and the build tooling. None of this
   generator is copied into it.
 
 The target never needs a separate pristine reference: `apply.sh` fetches one
@@ -22,18 +22,27 @@ always derived from a known-pristine base.
 
 ## What is produced
 
+The graft is emitted as `bank_XX.asm` files -- one per expanded-ROM bank,
+following the disassembly's own convention -- so the fork reads `bank_00` ..
+`bank_1F` (base) then `bank_20` .. `bank_2E` (graft):
+
 | Output in the target | Produced by | From |
 | --- | --- | --- |
 | `bank_00/0C/0D/0E/13/18/1C.asm` hooks | `scripts/base_edits.py` | `.deps/jpdasm` (pristine) |
-| `english/us_text.asm` | `scripts/generate_us_text.py` | `.deps/usdasm` (bank_0E → $2E) |
-| `english/us_bank00.asm` | `scripts/generate_bank00.py` | `.deps/jpdasm` (bank_00 → $20) |
-| `english/en_credits.asm` | `scripts/generate_credits.py` | `.deps/jpdasm` + `usdasm` (→ $2E) |
-| `english/en_item_menu.asm` | `scripts/generate_item_menu.py` | `.deps/usdasm` + `jpdasm` (→ $2D) |
-| `english/us_menu.asm` | `scripts/generate_menu.py` | `.deps/usdasm` + `jpdasm` (→ $2C) |
-| `english/{usgfx,usfs_gfx}.asm` | copied from `payload/` | — |
+| `bank_20.asm` (VWF font + `TransferFontToVRAM`) | `scripts/generate_banks.py` | `.deps/jpdasm` + `usdasm` |
+| `bank_22.asm` / `bank_23.asm` (message data) | `scripts/generate_banks.py` | `.deps/usdasm` |
+| `bank_2C.asm` (file-select) | `scripts/generate_banks.py` | `.deps/usdasm` + `jpdasm` |
+| `bank_2D.asm` (item menu) | `scripts/generate_banks.py` | `.deps/usdasm` + `jpdasm` |
+| `bank_2E.asm` (text engine + credits) | `scripts/generate_banks.py` | `.deps/usdasm` + `jpdasm` |
+| `bank_26.asm` (US graphics sheets) | `scripts/generate_banks.py` | `.deps/usdasm` (via incbin) |
+| `bank_27.asm` (file-select palette) | `scripts/generate_banks.py` | `.deps/usdasm` (via incbin) |
 | `main.asm` includes + 2 MB padding | `scripts/mainasm.py` | — |
 | `.gitignore` binary excludes | `scripts/gitignore.py` | — |
 | `extract_english_assets.py`, `build_english_rom.sh` | copied | — |
+
+`generate_banks.py` runs the seven subsystem generators, collects each one's
+placed (org-addressed) pieces, and groups them by ROM bank -- no subsystem owns
+a file, the bank does.
 
 The ROM-derived binaries (`english/font.2bpp`, `*.2bppc`, `*.3bppc`,
 `usfs_pal.bin`) are **not** stored anywhere — they are copyrighted game data.
@@ -47,10 +56,11 @@ hand later).
   handler), and a few byte-neutral operand swaps. Every edit is declared there
   and located by label/`#_` anchor — never a line number — so it fails loud if
   upstream drifts.
-* **The five `generate_*.py`** each relocate a subsystem into the expanded ROM
+* **The seven `generate_*.py`** each relocate a subsystem into the expanded ROM
   (2nd MB) under the `EN_` namespace, pulling what they need *by name* from the
   US and/or JP disassembly and applying the documented English edits — no
-  hand-maintained relocated assembly.
+  hand-maintained relocated assembly. **`generate_banks.py`** drives all seven
+  and regroups their placed pieces into the per-bank `bank_2X.asm` files.
 
 ## Prerequisites
 
@@ -74,7 +84,7 @@ hand later).
 # Deploy only (extract assets on the target later):
 ./apply.sh --target /path/to/jpdasm-fork
 
-# Baseline: deploy the change-free form (no base hooks, baseline english/*.asm):
+# Baseline: deploy the change-free form (no base hooks, baseline graft banks):
 ./apply.sh --target /path/to/jpdasm-fork --baseline
 
 # Add --verify to run the base-edit regression check after deploying.
@@ -108,9 +118,8 @@ make two commits on the target and diff them.
    cd FORK && git add -A && git commit -m "English graft: apply base-assembly hooks"
    ```
 
-3. **Diff** — confined to the base-bank hooks and the generated-code edits; the
-   hand-maintained assets and `main.asm` are identical on both sides, so they do
-   not clutter it:
+3. **Diff** — confined to the base-bank hooks and the generated-code edits;
+   `main.asm` is identical on both sides, so it does not clutter it:
 
    ```bash
    git diff <baseline-branch>..english-base-edits

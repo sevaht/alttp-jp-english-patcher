@@ -58,7 +58,7 @@ BODY_NOTE = (
 )
 
 
-def build(*, changes: bool, jpdasm: Path = JPDASM) -> str:
+def build(*, changes: bool, jpdasm: Path = JPDASM) -> Relocation:
     bank00 = Assembly.from_path(jpdasm / "bank_00.asm")
     routine = bank00.extract([ROOT], recursive=True, external=SHARED)
     start = routine.start_address
@@ -70,15 +70,15 @@ def build(*, changes: bool, jpdasm: Path = JPDASM) -> str:
             routine.replace(old, new, count=1)
         routine.lines.insert(0, note(BODY_NOTE))
 
-    relocation = Relocation(HEADER)
+    relocation = Relocation(
+        HEADER, hooks=HOOKS if changes else frozenset(), shared=SHARED
+    )
     relocation.place(
         routine,
         mirror(start),
         "bank-$00 TransferFontToVRAM (mirror of JP $00E596).",
     )
-    return relocation.render(
-        hooks=HOOKS if changes else frozenset(), shared=SHARED
-    )
+    return relocation
 
 
 def main() -> None:
@@ -102,7 +102,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(build(changes=not args.baseline, jpdasm=args.jpdasm))
+    args.out.write_text(
+        build(changes=not args.baseline, jpdasm=args.jpdasm).render()
+    )
     mode = "baseline" if args.baseline else "with changes"
     print(f"wrote {args.out} ({mode})")
 
