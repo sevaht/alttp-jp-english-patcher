@@ -9,7 +9,7 @@ diff of the base-assembly changes.
 ## The two repositories
 
 * **This repo (patcher)** — all the generative work: the Python toolkit, the
-  the asset extractor, and `apply.sh`.
+  asset extractor, and `apply.sh`.
 * **The target (jpdasm fork)** — a clean fork of upstream `jpdasm`. After
   `apply.sh` it is a functional English translation: the base banks hooked in
   place, the graft's expanded-ROM banks `bank_20.asm` .. `bank_2E.asm` sitting
@@ -29,20 +29,20 @@ following the disassembly's own convention -- so the fork reads `bank_00` ..
 | Output in the target | Produced by | From |
 | --- | --- | --- |
 | `bank_00/0C/0D/0E/13/18/1C.asm` hooks | `scripts/base_edits.py` | `.deps/jpdasm` (pristine) |
-| `bank_20.asm` (VWF font + `TransferFontToVRAM`) | `scripts/generate_banks.py` | `.deps/jpdasm` + `usdasm` |
-| `bank_22.asm` / `bank_23.asm` (message data) | `scripts/generate_banks.py` | `.deps/usdasm` |
-| `bank_2C.asm` (file-select) | `scripts/generate_banks.py` | `.deps/usdasm` + `jpdasm` |
-| `bank_2D.asm` (item menu) | `scripts/generate_banks.py` | `.deps/usdasm` + `jpdasm` |
-| `bank_2E.asm` (text engine + credits) | `scripts/generate_banks.py` | `.deps/usdasm` + `jpdasm` |
-| `bank_26.asm` (US graphics sheets) | `scripts/generate_banks.py` | `.deps/usdasm` (via incbin) |
-| `bank_27.asm` (file-select palette) | `scripts/generate_banks.py` | `.deps/usdasm` (via incbin) |
+| `bank_20.asm` (VWF font + `TransferFontToVRAM`) | `scripts/generate.py` | `.deps/jpdasm` + `usdasm` |
+| `bank_22.asm` / `bank_23.asm` (message data) | `scripts/generate.py` | `.deps/usdasm` |
+| `bank_2C.asm` (file-select) | `scripts/generate.py` | `.deps/usdasm` + `jpdasm` |
+| `bank_2D.asm` (item menu) | `scripts/generate.py` | `.deps/usdasm` + `jpdasm` |
+| `bank_2E.asm` (text engine + credits) | `scripts/generate.py` | `.deps/usdasm` + `jpdasm` |
+| `bank_26.asm` (US graphics sheets) | `scripts/generate.py` | `.deps/usdasm` (via incbin) |
+| `bank_27.asm` (file-select palette) | `scripts/generate.py` | `.deps/usdasm` (via incbin) |
 | `main.asm` includes + 2 MB padding | `scripts/mainasm.py` | — |
 | `.gitignore` binary excludes | `scripts/gitignore.py` | — |
 | `extract_english_assets.py`, `build_english_rom.sh` | copied | — |
 
-`generate_banks.py` runs the seven subsystem generators, collects each one's
-placed (org-addressed) pieces, and groups them by ROM bank -- no subsystem owns
-a file, the bank does.
+`generate.py` builds every subsystem (each a self-contained function),
+collects their placed (org-addressed) pieces, and groups them by ROM bank -- no
+subsystem owns a file, the bank does.
 
 The ROM-derived binaries (`english/font.2bpp`, `*.2bppc`, `*.3bppc`,
 `usfs_pal.bin`) are **not** stored anywhere — they are copyrighted game data.
@@ -56,11 +56,11 @@ hand later).
   handler), and a few byte-neutral operand swaps. Every edit is declared there
   and located by label/`#_` anchor — never a line number — so it fails loud if
   upstream drifts.
-* **The seven `generate_*.py`** each relocate a subsystem into the expanded ROM
-  (2nd MB) under the `EN_` namespace, pulling what they need *by name* from the
-  US and/or JP disassembly and applying the documented English edits — no
-  hand-maintained relocated assembly. **`generate_banks.py`** drives all seven
-  and regroups their placed pieces into the per-bank `bank_2X.asm` files.
+* **`generate.py`** relocates every subsystem into the expanded ROM (2nd MB)
+  under the `EN_` namespace, pulling what it needs *by name* from the US and/or
+  JP disassembly and applying the documented English edits (no hand-maintained
+  relocated assembly), then regroups the placed pieces into the per-bank
+  `bank_2X.asm` files.
 
 ## Prerequisites
 

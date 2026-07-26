@@ -20,8 +20,7 @@ command -v uv >/dev/null 2>&1 || { echo "error: uv not found" >&2; exit 1; }
 cd "$here/scripts"
 scripts=(
     graft.py base_edits.py mainasm.py gitignore.py verify_base.py
-    generate_us_text.py generate_bank00.py generate_credits.py
-    generate_item_menu.py generate_menu.py generate_gfx.py generate_fs_palette.py generate_banks.py
+    generate.py
 )
 run() { local msg="$1"; shift; echo "== $msg =="; "$@"; echo; }
 

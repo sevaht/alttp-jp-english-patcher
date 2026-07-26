@@ -43,7 +43,7 @@ assembly changes.
 | Step | Script | Result in the target |
 | --- | --- | --- |
 | Hook base banks | `scripts/base_edits.py` | `bank_00/0C/0D/0E/13/18/1C.asm` gain the function-repointing hooks |
-| Generate graft banks | `scripts/generate_banks.py` (drives the seven `generate_*.py`) | `bank_20/22/23/2C/2D/2E.asm` (relocated US/JP code, grouped by bank) |
+| Generate graft banks | `scripts/generate.py` | `bank_20/22/23/26/27/2C/2D/2E.asm` (relocated US/JP code + assets, grouped by bank) |
 | Deploy tooling | `apply.sh` | `extract_english_assets.py` + `build_english_rom.sh` |
 | Patch main | `scripts/mainasm.py` | `main.asm` gets the `bank_2X` includes + 2 MB padding |
 | Ignore binaries | `scripts/gitignore.py` | `.gitignore` excludes the ROM-derived `english/*` blobs |
@@ -54,14 +54,8 @@ assembly changes.
 apply.sh                     the one entry point (orchestrator)
 scripts/                     the generator toolkit
   graft.py                   relocation + EN_ namespacing + write_banks
-  generate_banks.py          drives the seven below, groups pieces by bank
-  generate_us_text.py        US text engine     -> $2E (+ font $20, msgs $22/$23)
-  generate_bank00.py         JP bank-00 font    -> $20
-  generate_credits.py        JP/US credits      -> $2E
-  generate_item_menu.py      US/JP item menu    -> $2D
-  generate_menu.py           US/JP file-select  -> $2C
-  generate_gfx.py            US menu/FS graphics -> $26
-  generate_fs_palette.py     US file-select palette -> $27
+  generate.py                every subsystem (text/menu/item-menu/credits/
+                             font/graphics/palette), grouped by bank
   base_edits.py              declares every base-bank hook (library Patcher)
   mainasm.py  gitignore.py   target main.asm / .gitignore patchers
   verify_base.py             regression guard (frozen hashes)

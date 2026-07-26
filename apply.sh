@@ -3,7 +3,7 @@
 #
 # Turns a fork of spannerisms/jpdasm into a functional English translation by:
 #   1. hooking the base banks               (scripts/base_edits.py)
-#   2. generating the graft banks bank_20..bank_2E (scripts/generate_banks.py)
+#   2. generating the graft banks bank_20..bank_2E (scripts/generate.py)
 #   3. copying the asset extractor + build tooling
 #   4. patching main.asm (bank_2X includes + 2 MB padding)
 #   5. updating .gitignore (ROM-derived binaries stay out of git)
@@ -22,7 +22,7 @@
 #   --us-rom    if given, extract the ROM-derived binaries into the target now;
 #               otherwise the target gets extract_english_assets.py to run later
 #   --jp-rom    JP 1.0 ROM (asset-extraction md5 check; default: target/alttp.sfc)
-#   --baseline  emit the change-free baseline (no base hooks, baseline us_text.asm)
+#   --baseline  emit the change-free baseline (no base hooks, no graft edits)
 #               -- the clean base for a review diff
 #   --verify    after deploying, run the base-edit regression check
 #
@@ -98,7 +98,7 @@ echo "==> hooking base banks -> $target"
 run_py base_edits.py --src "$jpdasm" --dst "$target" $baseline
 
 echo "==> generating graft banks (bank_20 .. bank_2E) -> $target"
-run_py generate_banks.py --usdasm "$usdasm" --jpdasm "$jpdasm" \
+run_py generate.py --usdasm "$usdasm" --jpdasm "$jpdasm" \
     --out "$target" $baseline
 
 echo "==> copying build tooling"

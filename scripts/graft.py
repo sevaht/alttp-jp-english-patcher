@@ -209,7 +209,7 @@ class Relocation:
     only materialises in the piece that defines it, so this is safe).
     """
 
-    header: str
+    header: str = ""
     hooks: frozenset[str] = field(default_factory=frozenset)
     shared: frozenset[str] = field(default_factory=frozenset)
     _pieces: list[tuple[int, Assembly | str, str, bool]] = field(
