@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression guard for :mod:`base_edits`.
+"""Regression guard for :func:`generate.apply_base_edits`.
 
 Applies the base-bank hooks to a pristine jpdasm checkout and compares each
 hooked bank's *assembler-relevant signature* (label|opcode|args per content
@@ -20,11 +20,21 @@ import sys
 import tempfile
 from pathlib import Path
 
-from snes_assembly_parser import Assembly
+from snes_assembly_parser import Assembly, Rom
 
-from base_edits import apply_all
+from generate import apply_base_edits
 
 REFERENCE = Path(__file__).with_name("reference_hashes.txt")
+# The banks apply_base_edits hooks (the only base banks it changes).
+BASE_BANKS = (
+    "bank_00",
+    "bank_0C",
+    "bank_0D",
+    "bank_0E",
+    "bank_13",
+    "bank_18",
+    "bank_1C",
+)
 
 
 def signature_hash(path: Path) -> str:
@@ -39,10 +49,12 @@ def signature_hash(path: Path) -> str:
 
 def compute(src: Path) -> dict[str, str]:
     with tempfile.TemporaryDirectory() as temp_dir:
-        banks = apply_all(src, Path(temp_dir))
+        english = Rom.load(src / "main.asm")
+        apply_base_edits(english)
+        english.write(Path(temp_dir))
         return {
             bank: signature_hash(Path(temp_dir) / f"{bank}.asm")
-            for bank in banks
+            for bank in BASE_BANKS
         }
 
 
@@ -76,8 +88,7 @@ def main() -> int:
     if args.freeze:
         body = "".join(f"{bank}: {got[bank]}\n" for bank in sorted(got))
         REFERENCE.write_text(
-            "# base_edits.py bank-signature hashes (see verify_base.py)\n"
-            + body
+            "# base-bank hook signature hashes (see verify_base.py)\n" + body
         )
         print(f"froze {len(got)} hashes to {REFERENCE.name}")
         return 0

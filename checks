@@ -19,8 +19,7 @@ command -v uv >/dev/null 2>&1 || { echo "error: uv not found" >&2; exit 1; }
 
 cd "$here/scripts"
 scripts=(
-    graft.py base_edits.py mainasm.py gitignore.py verify_base.py
-    generate.py
+    graft.py gitignore.py verify_base.py generate.py
 )
 run() { local msg="$1"; shift; echo "== $msg =="; "$@"; echo; }
 
@@ -28,5 +27,10 @@ run "format code"    uv run black --target-version py312 "${scripts[@]}"
 run "sort imports"   uv run ruff check --fix --select I "${scripts[@]}"
 run "typecheck"      env MYPYPATH="$lib" uv run mypy "${scripts[@]}"
 run "lint"           uv run ruff check "${scripts[@]}"
-run "find dead code" uv run vulture "${scripts[@]}"
+# --min-confidence mirrors [tool.vulture] in ../pyproject.toml (vulture only
+# reads that config from its CWD, and we run from scripts/). Relocation
+# .placements() is used by the library's Rom.add via the Relocatable protocol,
+# which vulture cannot see across the package boundary (a 60%-confidence false
+# positive).
+run "find dead code" uv run vulture --min-confidence 70 "${scripts[@]}"
 echo "All checks passed!"

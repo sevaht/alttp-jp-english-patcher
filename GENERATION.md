@@ -28,7 +28,7 @@ following the disassembly's own convention -- so the fork reads `bank_00` ..
 
 | Output in the target | Produced by | From |
 | --- | --- | --- |
-| `bank_00/0C/0D/0E/13/18/1C.asm` hooks | `scripts/base_edits.py` | `.deps/jpdasm` (pristine) |
+| `bank_00/0C/0D/0E/13/18/1C.asm` hooks | `scripts/generate.py` | `.deps/jpdasm` (pristine) |
 | `bank_20.asm` (VWF font + `TransferFontToVRAM`) | `scripts/generate.py` | `.deps/jpdasm` + `usdasm` |
 | `bank_22.asm` / `bank_23.asm` (message data) | `scripts/generate.py` | `.deps/usdasm` |
 | `bank_2C.asm` (file-select) | `scripts/generate.py` | `.deps/usdasm` + `jpdasm` |
@@ -36,13 +36,18 @@ following the disassembly's own convention -- so the fork reads `bank_00` ..
 | `bank_2E.asm` (text engine + credits) | `scripts/generate.py` | `.deps/usdasm` + `jpdasm` |
 | `bank_26.asm` (US graphics sheets) | `scripts/generate.py` | `.deps/usdasm` (via incbin) |
 | `bank_27.asm` (file-select palette) | `scripts/generate.py` | `.deps/usdasm` (via incbin) |
-| `main.asm` includes + 2 MB padding | `scripts/mainasm.py` | — |
+| `main.asm` includes + 2 MB padding | `scripts/generate.py` | — |
+| the untouched base banks + support files | `scripts/generate.py` | `.deps/jpdasm` (round-tripped) |
 | `.gitignore` binary excludes | `scripts/gitignore.py` | — |
 | `extract_english_assets.py`, `build_english_rom.sh` | copied | — |
 
-`generate.py` builds every subsystem (each a self-contained function),
-collects their placed (org-addressed) pieces, and groups them by ROM bank -- no
-subsystem owns a file, the bank does.
+`generate.py` does it all in one pass: it loads the pristine JP disassembly as
+a single whole-program `Rom`, folds every relocated subsystem into it (each a
+self-contained function whose placed, org-addressed pieces get grouped by ROM
+bank -- no subsystem owns a file, the bank does), hooks the base banks to reach
+them, wires `main.asm`, and writes the entire fork back out (the hooked base
+banks, the graft banks beside them, and every untouched unit round-tripped
+byte-for-byte).
 
 The ROM-derived binaries (`english/font.2bpp`, `*.2bppc`, `*.3bppc`,
 `usfs_pal.bin`) are **not** stored anywhere — they are copyrighted game data.
@@ -50,17 +55,22 @@ They are regenerated on the target from your US ROM by
 `extract_english_assets.py` (run automatically when you pass `--us-rom`, or by
 hand later).
 
-* **`base_edits.py`** rewrites the pristine JP banks with the small hooks that
-  make unmodified JP callers reach the relocated code: `UNREACHABLE_` renames,
-  same-bank landing-pad trampolines, one inline-block `JML` redirect (the V-IRQ
-  handler), and a few byte-neutral operand swaps. Every edit is declared there
-  and located by label/`#_` anchor — never a line number — so it fails loud if
-  upstream drifts.
-* **`generate.py`** relocates every subsystem into the expanded ROM (2nd MB)
-  under the `EN_` namespace, pulling what it needs *by name* from the US and/or
-  JP disassembly and applying the documented English edits (no hand-maintained
-  relocated assembly), then regroups the placed pieces into the per-bank
-  `bank_2X.asm` files.
+* **`generate.py`** does everything on one whole-program `Rom`:
+  * **`build()`** loads the pristine JP, `add`s every relocated subsystem,
+    `apply_base_edits`, wires `main.asm`, and returns the `Rom`; `Rom.write`
+    emits the fork.
+  * **the subsystem functions** (`text`, `font_upload`, `credits_bank`,
+    `item_menu`, `file_select`, `graphics`, `file_select_palette`) relocate
+    each subsystem into the expanded ROM (2nd MB) under the `EN_` namespace,
+    pulling what they need *by name* from the US and/or JP disassembly and
+    applying the documented English edits (no hand-maintained relocated
+    assembly). `Rom.write` regroups the placed pieces into the per-bank
+    `bank_2X.asm` files.
+  * **`apply_base_edits()`** hooks the pristine JP banks so unmodified JP
+    callers reach the relocated code: `UNREACHABLE_` renames, same-bank
+    landing-pad trampolines, one inline-block `JML` redirect (the V-IRQ
+    handler), and a few byte-neutral operand swaps — all located by label/`#_`
+    anchor (never a line number), so an edit fails loud if upstream drifts.
 
 ## Prerequisites
 

@@ -42,10 +42,8 @@ assembly changes.
 
 | Step | Script | Result in the target |
 | --- | --- | --- |
-| Hook base banks | `scripts/base_edits.py` | `bank_00/0C/0D/0E/13/18/1C.asm` gain the function-repointing hooks |
-| Generate graft banks | `scripts/generate.py` | `bank_20/22/23/26/27/2C/2D/2E.asm` (relocated US/JP code + assets, grouped by bank) |
+| Generate the whole program | `scripts/generate.py` | base `bank_00/0C/0D/0E/13/18/1C.asm` hooked in place; graft `bank_20/22/23/26/27/2C/2D/2E.asm` beside them; `main.asm` wired (`bank_2X` includes + 2 MB padding); every untouched unit round-tripped |
 | Deploy tooling | `apply.sh` | `extract_english_assets.py` + `build_english_rom.sh` |
-| Patch main | `scripts/mainasm.py` | `main.asm` gets the `bank_2X` includes + 2 MB padding |
 | Ignore binaries | `scripts/gitignore.py` | `.gitignore` excludes the ROM-derived `english/*` blobs |
 
 ## Layout
@@ -53,11 +51,11 @@ assembly changes.
 ```
 apply.sh                     the one entry point (orchestrator)
 scripts/                     the generator toolkit
-  graft.py                   relocation + EN_ namespacing + write_banks
-  generate.py                every subsystem (text/menu/item-menu/credits/
-                             font/graphics/palette), grouped by bank
-  base_edits.py              declares every base-bank hook (library Patcher)
-  mainasm.py  gitignore.py   target main.asm / .gitignore patchers
+  graft.py                   relocation + EN_ namespacing + bank_header
+  generate.py                the whole program: build() on one Rom -- every
+                             subsystem (text/menu/item-menu/credits/font/
+                             graphics/palette) + apply_base_edits + main.asm
+  gitignore.py               target .gitignore patcher
   verify_base.py             regression guard (frozen hashes)
   reference_hashes.txt       expected base-edit signatures
 extract_english_assets.py    ROM-derived binary extractor (deployed to target)

@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Generate the English graft as ``bank_XX.asm`` files -- one per expanded-ROM
-bank, following the disassembly's one-file-per-bank convention.
+"""Generate the whole English program: one :class:`Rom` loaded, edited, saved.
 
-Each function below builds one relocated subsystem as a
-:class:`graft.Relocation`
-(its placed, ``EN_``-namespaced pieces, each knowing the ``org`` it lands at);
-:func:`placements` collects them all and :func:`graft.write_banks` groups
-them by
-ROM bank into ``bank_20`` .. ``bank_2E``, beside the base ``bank_00`` ..
-``bank_1F``. The code is pulled *by name* from the US/JP disassembly
+:func:`build` loads the pristine JP disassembly as a single whole-program
+:class:`~snes_assembly_parser.Rom` and does everything on it: it
+:meth:`~Rom.add`\\ s each relocated subsystem (built below as a
+:class:`graft.Relocation` -- its placed, ``EN_``-namespaced pieces, each
+knowing the ``org`` it lands at), :func:`hooks <apply_base_edits>` the base
+banks to reach those copies *by name or ``#_`` address anchor* (never by which
+file a routine lives in), and wires ``main.asm``. :meth:`~Rom.write` then emits
+the entire fork: the base banks hooked in place, the graft grouped into
+``bank_20`` .. ``bank_2E`` beside them (see :func:`graft.bank_header`), and
+every untouched unit round-tripped byte-for-byte.
+
+The relocated code is pulled *by name* from the US/JP disassembly
 (``../usdasm``, ``../jpdasm``); the binary assets (font, graphics, palette) are
 US-ROM byte slices ``incbin``\\ 'd from ``english/`` (via
-``extract_english_assets.py``). Each subsystem is self-contained -- its
-constants, helpers, and edits live in its own function -- so there is nothing
-file-wide to trace through.
+``extract_english_assets.py``).
+Each subsystem is self-contained -- its constants, helpers, and edits live in
+its own function -- so there is nothing file-wide to trace through.
 """
 
 from __future__ import annotations
@@ -24,8 +28,10 @@ from pathlib import Path
 from snes_assembly_parser import (
     Assembly,
     Block,
+    LandingPad,
     Line,
     Pool,
+    Rom,
     data,
     datas,
     instructions,
@@ -33,13 +39,13 @@ from snes_assembly_parser import (
     notes,
 )
 
-from graft import Placement, Relocation, mirror, substitute, write_banks
+from graft import Relocation, bank_header, mirror, require_start, substitute
 
 USDASM = Path("../usdasm")
 JPDASM = Path("../jpdasm")
 
 
-def text(usdasm: Path, *, changes: bool) -> Relocation:
+def text(us: Rom, *, changes: bool) -> Relocation:
     """The US text subsystem: the VWF font (bank ``$20``), the message engine
     (mirror-placed to ``$2E``), and the message data (``$22``/``$23``).
 
@@ -180,10 +186,7 @@ def text(usdasm: Path, *, changes: bool) -> Relocation:
             ),
         ]
 
-    bank_0e = Assembly.from_path(usdasm / "bank_0E.asm")
-    text_asm = Assembly.from_path(usdasm / "text.asm")
-
-    engine = bank_0e.extract(
+    engine = us.extract(
         engine_roots,
         recursive=True,
         external=shared,
@@ -192,14 +195,10 @@ def text(usdasm: Path, *, changes: bool) -> Relocation:
     )
     if changes:
         edit_engine(engine)
-    start = engine.start_address
-    if start is None:
-        msg = "engine has no address anchor"
-        raise ValueError(msg)
-    engine_org = mirror(start)  # $0EC440 -> $2EC440
+    engine_org = mirror(require_start(engine))  # $0EC440 -> $2EC440
 
-    main = text_asm.blocks_until("Message_Data")
-    overflow = text_asm.blocks_until("Message_DataExtra")
+    main = us.blocks_until("Message_Data")
+    overflow = us.blocks_until("Message_DataExtra")
     if changes:
         main.delete_block("Message_000B")  # drop US-only cursor messages,
         main.delete_block("Message_000C")  # so game-code message IDs match JP
@@ -231,9 +230,7 @@ def text(usdasm: Path, *, changes: bool) -> Relocation:
     overflow_note = "MESSAGE overflow (US bank_0E)"
     overflow_note += " + re-appended cursor prompts." if changes else "."
 
-    relocation = Relocation(
-        hooks=engine_hooks if changes else frozenset(), shared=shared
-    )
+    relocation = Relocation(hooks=engine_hooks, shared=shared, changes=changes)
     # Our VWF text font (font.2bpp); a raw blob (TheFont/TheFont_end stay bare,
     # shared), read by the engine and the bank_00 upload.
     relocation.place(
@@ -282,19 +279,13 @@ def text(usdasm: Path, *, changes: bool) -> Relocation:
     return relocation
 
 
-def font_upload(jpdasm: Path, *, changes: bool) -> Relocation:
+def font_upload(jp: Rom, *, changes: bool) -> Relocation:
     """Bank ``$20``: JP ``TransferFontToVRAM``, mirror-placed and repointed to
     upload our plain-2bpp ``TheFont`` to VRAM $E000 (was a $7E2000 VWF buffer).
     """
     root = "TransferFontToVRAM"
     shared = frozenset({"TheFont", "TheFont_end"})
-    routine = Assembly.from_path(jpdasm / "bank_00.asm").extract(
-        [root], recursive=True, external=shared
-    )
-    start = routine.start_address
-    if start is None:
-        msg = f"{root} has no address anchor"
-        raise ValueError(msg)
+    routine = jp.extract([root], recursive=True, external=shared)
     if changes:
         # The three font-source operands, same byte width so length is
         # unchanged.
@@ -311,17 +302,15 @@ def font_upload(jpdasm: Path, *, changes: bool) -> Relocation:
             ),
         )
     relocation = Relocation(
-        hooks=frozenset({root}) if changes else frozenset(), shared=shared
+        hooks=frozenset({root}), shared=shared, changes=changes
     )
-    relocation.place(
-        routine,
-        mirror(start),
-        "bank-$00 TransferFontToVRAM (mirror of JP $00E596).",
+    relocation.place_mirror(
+        routine, "bank-$00 TransferFontToVRAM (mirror of JP $00E596)."
     )
     return relocation
 
 
-def credits_bank(jpdasm: Path, usdasm: Path, *, changes: bool) -> Relocation:
+def credits_bank(jp: Rom, us: Rom, *, changes: bool) -> Relocation:
     """Bank ``$2E``: the JP credits reader + tables, mirror-placed, with the
     glyph map swapped to the US table so credits render in the US Latin font.
 
@@ -358,18 +347,16 @@ def credits_bank(jpdasm: Path, usdasm: Path, *, changes: bool) -> Relocation:
     )
     readers = ("Credits_AddNextAttribution", "Credits_AddEndingSequenceText")
 
-    def us_glyph_values(
-        us_bank: Assembly, names: tuple[str, ...]
-    ) -> list[list[str]]:
+    def us_glyph_values(names: tuple[str, ...]) -> list[list[str]]:
         # The dw operand lists of the named US blocks/pools, in order (pool
         # data before block, matching Assembly.concat).
         values: list[list[str]] = []
         for name in names:
             segments = []
-            if name in us_bank.pools:
-                segments.append(us_bank.pool(name, comments=False))
-            if name in us_bank.labels:
-                segments.append(us_bank.function(name, comments=False))
+            if name in us.pool_names:
+                segments.append(us.pool(name, comments=False))
+            if name in us.label_names:
+                segments.append(us.function(name, comments=False))
             for segment in segments:
                 values += [
                     line.arguments
@@ -401,19 +388,14 @@ def credits_bank(jpdasm: Path, usdasm: Path, *, changes: bool) -> Relocation:
         msg = "return_long: group does not end in RTS"
         raise ValueError(msg)
 
-    jp_bank = Assembly.from_path(jpdasm / "bank_0E.asm")
-    us_bank = Assembly.from_path(usdasm / "bank_0E.asm")
     relocation = Relocation()
     for blocks, glyph_blocks in groups:
-        group = jp_bank.concat(list(blocks))
-        start = group.start_address
-        if start is None:
-            msg = f"group {blocks[0].name} has no address anchor"
-            raise ValueError(msg)
+        group = jp.concat(list(blocks))
         if changes:
-            splice_us_glyphs(group, us_glyph_values(us_bank, glyph_blocks))
+            splice_us_glyphs(group, us_glyph_values(glyph_blocks))
             if any(block.name in readers for block in blocks):
                 return_long(group)
+        start = require_start(group)
         relocation.place(
             group,
             mirror(start),
@@ -422,7 +404,7 @@ def credits_bank(jpdasm: Path, usdasm: Path, *, changes: bool) -> Relocation:
     return relocation
 
 
-def item_menu(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
+def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
     """Bank ``$2D``: the US item menu, mirror-placed. Four entry routines get a
     DBR-setting trampoline (their bodies become ``<name>_body`` and return
     long);
@@ -505,11 +487,11 @@ def item_menu(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
             copy.size = row.size
         region.lines[end:end] = copies
 
-    def patch_ability_text(region: Assembly, jp_bank: Assembly) -> None:
+    def patch_ability_text(region: Assembly) -> None:
         # Rows 10-11 of AbilityText keep the JP tile values (not US).
         jp_rows = [
             line.arguments
-            for line in jp_bank.function("AbilityText", comments=False).lines
+            for line in jp.function("AbilityText", comments=False).lines
             if line.opcode == "dw"
         ]
         row = 0
@@ -525,8 +507,6 @@ def item_menu(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
                     line.arguments = jp_rows[row]
                 row += 1
 
-    us_bank = Assembly.from_path(usdasm / "bank_0D.asm")
-    jp_bank = Assembly.from_path(jpdasm / "bank_0D.asm")
     relocation = Relocation()
 
     def place(body: Assembly, org: int) -> None:
@@ -535,38 +515,26 @@ def item_menu(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
     if changes:
         place(trampolines(), 0x2DE100)
     for us_name, en_name, long_return in bodies:
-        body = us_bank.function(us_name, comments=False)
-        start = body.start_address
-        if start is None:
-            msg = f"{us_name} has no address anchor"
-            raise ValueError(msg)
+        body = us.function(us_name, comments=False)
         if changes and long_return:
             return_long(body)
         if en_name != us_name:
             body.lines[0].label = en_name  # rename the routine label
-        place(body, mirror(start))
+        place(body, mirror(require_start(body)))
 
-    region = us_bank.concat([*name_text])
-    region_start = region.start_address
-    if region_start is None:
-        msg = "name-text region has no address anchor"
-        raise ValueError(msg)
+    region = us.concat([*name_text])
     if changes:
         duplicate_mirror(region)
-        patch_ability_text(region, jp_bank)
-    place(region, mirror(region_start))
+        patch_ability_text(region)
+    place(region, mirror(require_start(region)))
 
-    cursor = us_bank.function("MenuCursorPositions", comments=False)
-    cursor_start = cursor.start_address
-    if cursor_start is None:
-        msg = "MenuCursorPositions has no address anchor"
-        raise ValueError(msg)
+    cursor = us.function("MenuCursorPositions", comments=False)
     shift = 0x20 if changes else 0  # Mirror grew by $20 (2 rows)
-    place(cursor, mirror(cursor_start) + shift)
+    place(cursor, mirror(require_start(cursor)) + shift)
     return relocation
 
 
-def file_select(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
+def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry, packed
     contiguously from ``$2C8000`` (two JP-restored save routines are too big
     for
@@ -609,8 +577,8 @@ def file_select(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
         "IRQActiveHandler": (
             "; [ENG-FS] V-IRQ active handler (name-entry raster split)."
             " bank_00's inline block JMLs here\n"
-            "; (see base_edits.py) and we JML back to $00821B. $0128:"
-            " $01=name-entry, $FF=transition.\n"
+            "; (see apply_base_edits in generate.py) and we JML back to"
+            " $00821B. $0128: $01=name-entry, $FF=transition.\n"
             "IRQActiveHandler:\n"
             "LDA.w TIMEUP\n"
             "LDA.w $0128\n"
@@ -709,9 +677,9 @@ def file_select(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
             return Assembly.from_content(custom[name].split("\n")).function(
                 name, comments=False
             )
-        source = jp_bank if name in jp_blocks else us_bank
+        source = jp if name in jp_blocks else us
         lines = []
-        if name in source.pools:
+        if name in source.pool_names:
             lines += source.pool(name, comments=False).lines
         lines += source.function(name, comments=False).lines
         segment = Assembly(lines)
@@ -722,13 +690,10 @@ def file_select(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
                 complex_edits[name](segment)
         return segment
 
-    us_bank = Assembly.from_path(usdasm / "bank_0C.asm")
-    jp_bank = Assembly.from_path(jpdasm / "bank_0C.asm")
-
     # Emitted in US source order: absolute addresses do not matter (symbolic
     # references), and source order keeps the few fall-through routines next to
     # their successor. The label-less helpers have no symbol to recurse to.
-    reachable = us_bank.closure(sorted(hooks), recursive=True)
+    reachable = us.closure(sorted(hooks), recursive=True)
     block_order = list(
         dict.fromkeys(
             entry.name for entry in reachable if isinstance(entry, Block)
@@ -740,7 +705,7 @@ def file_select(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
     lines = []
     for name in block_order:
         lines += block_segment(name).lines
-    relocation = Relocation(hooks=hooks if changes else frozenset())
+    relocation = Relocation(hooks=hooks, changes=changes)
     relocation.place(Assembly(lines), 0x2C8000, "file-select, packed.")
     return relocation
 
@@ -748,9 +713,8 @@ def file_select(usdasm: Path, jpdasm: Path, *, changes: bool) -> Relocation:
 def graphics(*, changes: bool) -> Relocation:
     """Bank ``$26``: the US menu/HUD + file-select graphics sheets (the
     kana/Latin font sheets ``GFX_DC``/``GFX_DD`` and the file-select "linoleum"
-    JP-vs-US kana/Latin font sheets ``GFX_DC``/``GFX_DD`` and the file-select
-    "linoleum" background ``GFX_39``). Binary US-ROM slices, ``incbin``\\ 'd;
-    each claims its freed JP name so the game's tables reach the US art.
+    background ``GFX_39``). Binary US-ROM slices, ``incbin``\\ 'd; each claims
+    its freed JP name so the game's tables reach the US art.
     """
     # (JP sheet name, its US-ROM slice, extracted into english/). Packed from
     # $268000; referenced by symbol, so the exact address is asar's job.
@@ -763,7 +727,7 @@ def graphics(*, changes: bool) -> Relocation:
         f'{name}:\n    incbin "english/{asset}"' for name, asset in sheets
     )
     relocation = Relocation(
-        hooks=frozenset(name for name, _ in sheets) if changes else frozenset()
+        hooks=frozenset(name for name, _ in sheets), changes=changes
     )
     relocation.place(
         body, 0x268000, "US graphics sheets (menu/HUD + file-select)."
@@ -841,24 +805,256 @@ USFS_Palette:
     return relocation
 
 
-def placements(
-    *, changes: bool, usdasm: Path, jpdasm: Path
-) -> list[Placement]:
-    """Every subsystem's placed, ``EN_``-namespaced pieces, in one list."""
-    relocations = [
-        text(usdasm, changes=changes),
-        font_upload(jpdasm, changes=changes),
-        credits_bank(jpdasm, usdasm, changes=changes),
-        item_menu(usdasm, jpdasm, changes=changes),
-        file_select(usdasm, jpdasm, changes=changes),
+# ---------------------------------------------------------------------------
+# base-disassembly hooks
+# ---------------------------------------------------------------------------
+# The graft relocates whole subsystems into the expanded ROM (2nd MB); these
+# are the small edits that make the unmodified JP banks reach the relocated
+# copies. They are applied *by name or #_ address anchor* through the whole-
+# program :class:`Rom`, so each fails loud if its target has drifted upstream
+# and never depends on which file a routine happens to live in.
+_REDIRECT_HEADER = (
+    "; [ENG-REDIRECT] Landing pads: the real routines run in bank ${bank} "
+    "(english/{file}).",
+    "; They keep the JP entry-point names so unmodified same-bank JSR callers "
+    "land here and",
+    "; forward across the bank with a register-transparent JSL/RTS bridge (an "
+    "argument in",
+    "; A/X/Y passes straight through); the JP originals are preserved "
+    "above as UNREACHABLE_*.",
+)
+
+
+def _redirect(bank: str, file: str) -> tuple[str, ...]:
+    return tuple(
+        line.format(bank=bank, file=file) for line in _REDIRECT_HEADER
+    )
+
+
+def _en_pad(name: str, comment: tuple[str, ...] = ()) -> LandingPad:
+    """A landing pad forwarding the freed JP ``name`` to its ``EN_`` copy."""
+    return LandingPad(name, f"EN_{name}", comment)
+
+
+def apply_base_edits(english: Rom) -> None:
+    """Hook the pristine JP program to reach the relocated English graft."""
+    # -- TEXT engine + credits (relocated to bank $2E) --
+    english.hook("Credits_AddNextAttribution")
+    english.hook("Credits_AddEndingSequenceText")
+    english.landing_pads(
+        "NULL_0EEDFB",
+        [
+            _en_pad("Credits_AddNextAttribution"),
+            _en_pad("Credits_AddEndingSequenceText"),
+        ],
+        header=_redirect("2E", "en_credits.asm"),
+    )
+    for name in (
+        "RenderText",
+        "Module0E_02_RenderText",
+        "DecompressFontGFX",
+        "BuildSomeTextMasks",
+    ):
+        english.hook(name)
+    # JP keeps CreateMessagePointers in bank $1C (US had it in bank $0E).
+    english.hook("CreateMessagePointers")
+
+    # -- FONT upload + file-select (bank $00 hooks; FS goes to bank $2C) --
+    english.relocate_block(
+        0x008205,
+        "EN_IRQActiveHandler",
+        resume=0x00820A,
+        orphan=(0x38,),
+        comment=(
+            "; [ENG-FS] V-IRQ active block -> relocated handler in bank $2C "
+            "(us_menu.asm).",
+        ),
+    )
+    english.set_operand(
+        0x008335,
+        "LDA.w #$00A9",
+        comment="[ENG-FS] US BG3 blank tile (was $0188 hex-pattern glyph)",
+    )
+    english.set_operand(
+        0x008D02,
+        "LDX.w #$07E0",
+        comment="[ENG-TEXT] US 126-tile text box (was $0780 / 120)",
+    )
+    english.set_operand(0x00E557, "LDA.b #TheFont>>16")
+    english.set_operand(0x00E563, "LDA.w #TheFont")
+    english.set_operand(0x00E568, "LDX.w #(TheFont_end-TheFont)/2-1")
+    english.hook("TransferFontToVRAM")
+
+    # File-select modules relocated/compacted to bank $2C: re-pin the FairyY
+    # data left behind, free the module names, repoint the one in-bank ref.
+    english.insert_before("FileSelect_FairyY", ["org $0CCC67"])
+    for name in (
+        "Module01_FileSelect",
+        "CopySaveToWRAM",
+        "Module02_CopyFile",
+        "Module03_KILLFile",
+        "Module04_NameFile",
+        "IntroLogoTilemap",
+        "FileSelectTilemap",
+        "FileSelectKILLFileTilemap",
+        "FileSelectCopyFileTilemap",
+        "NamePlayerTilemap",
+    ):
+        english.hook(name)
+    english.rewrite_reference(
+        0x0CCE8B, "CopySaveToWRAM", "UNREACHABLE_CopySaveToWRAM"
+    )
+
+    # -- ITEM MENU (relocated to bank $2D) --
+    for name in (
+        "UpdateBottleMenu",
+        "DrawAbilityText",
+        "SetLiftText",
+        "DrawEquippedYItem",
+    ):
+        english.hook(name)
+    english.landing_pads(
+        "NULL_0DAFDD",
+        [
+            _en_pad("UpdateBottleMenu"),
+            _en_pad("DrawAbilityText"),
+            _en_pad("SetLiftText"),
+            _en_pad("DrawEquippedYItem"),
+        ],
+        header=_redirect("2D", "en_item_menu.asm"),
+    )
+
+    # -- GRAPHICS: JP menu sheets repointed at the US art (bank $26) --
+    english.hook(
+        "GFX_39",
+        comment=(
+            "; [ENG-GFX] JP menu-bg sheet $39 repointed at the US linoleum "
+            "(GFX_39, usgfx.asm);",
+            "; this JP data is no longer referenced.",
+        ),
+    )
+    english.hook(
+        "GFX_DC",
+        comment=(
+            "; [ENG-GFX] JP menu-font sheet $69 repointed at the US font "
+            "(GFX_DC, usgfx.asm).",
+        ),
+    )
+    english.hook(
+        "GFX_DD",
+        comment=(
+            "; [ENG-GFX] JP $6A repointed at the US font (GFX_DD, usgfx.asm); "
+            "data stays live via GFX_71.",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# main.asm: pull in the graft banks + pad the ROM to a clean 2 MB
+# ---------------------------------------------------------------------------
+_MAIN_ANCHOR = 'incsrc "bank_1F.asm"'
+_MAIN_MARKER = 'incsrc "bank_20.asm"'
+# Inserted right after the last base-bank include: the graft-bank includes,
+# then the 2 MB padding + SNES header size byte the expansion needs (so the
+# checksum is a plain byte-sum every emulator agrees on).
+_MAIN_BLOCK = (
+    "",
+    'incsrc "bank_20.asm"',  # our VWF font + relocated TransferFontToVRAM
+    'incsrc "bank_22.asm"',  # message data (main table)
+    'incsrc "bank_23.asm"',  # message data (overflow)
+    'incsrc "bank_26.asm"',  # US menu/HUD + file-select font & bg graphics
+    'incsrc "bank_27.asm"',  # file-select US palette overlay + palette data
+    'incsrc "bank_2C.asm"',  # file-select / copy / erase / name-entry
+    'incsrc "bank_2D.asm"',  # item menu
+    'incsrc "bank_2E.asm"',  # text engine (+ override stubs) and credits
+    "",
+    "; [ENG-FS] Pad the ROM up to a clean 2 MB (power-of-2). The English graft"
+    " expands the ROM",
+    "; into banks $20-$2E, leaving it at a non-power-of-2 size (~0x150000)."
+    " The SNES header",
+    "; checksum for a non-power-of-2 ROM is computed by a mirror-and-sum"
+    " algorithm that asar and",
+    "; some emulators (e.g. snes9x) disagree on, which made snes9x report"
+    ' "invalid checksum".',
+    "; Padding to exactly 2 MB makes the checksum a plain byte-sum that"
+    " everyone agrees on, so",
+    "; --fix-checksum writes a value snes9x accepts. The gaps between the"
+    " graft banks ($21, $24-$25,",
+    "; $28-$2B, $2F-$3F) are unused ($00 fill) -- valid LoROM space in a 2 MB"
+    " ROM, free for future use.",
+    "org $3FFFFF",
+    "db $FF",
+    "",
+    "; Update the ROM-size byte in the SNES header to match the new 2 MB size"
+    " ($0A=1 MB -> $0B=2 MB;",
+    "; the field is 2^n KB). Keeps the header self-consistent with the padded"
+    " file.",
+    "org $00FFD7",
+    "db $0B",
+)
+
+
+def patch_main_asm(english: Rom) -> None:
+    """Wire the graft-bank includes + 2 MB padding into the entry ``main.asm``.
+
+    Idempotent and located by the ``incsrc "bank_1F.asm"`` anchor, not a line
+    number, so it survives upstream reformatting and fails loud if the anchor
+    is gone.
+    """
+    if not english.order:
+        msg = "patch_main_asm: Rom has no entry file"
+        raise ValueError(msg)
+    main = english.units[
+        english.order[0]
+    ]  # the entry (main.asm), loaded first
+    if any(str(line).strip() == _MAIN_MARKER for line in main.lines):
+        return
+    anchor = next(
+        (
+            index
+            for index, line in enumerate(main.lines)
+            if str(line).strip() == _MAIN_ANCHOR
+        ),
+        None,
+    )
+    if anchor is None:
+        msg = f"main.asm: anchor {_MAIN_ANCHOR!r} not found"
+        raise ValueError(msg)
+    main.lines[anchor + 1 : anchor + 1] = [
+        Line.from_line(text) for text in _MAIN_BLOCK
+    ]
+    main.resize()
+
+
+def build(*, usdasm: Path, jpdasm: Path, changes: bool) -> Rom:
+    """Assemble the whole English program as one editable :class:`Rom`.
+
+    Loads the pristine US and JP disassemblies as whole-program
+    :class:`Rom`\\ s, copies the JP into the working ``english`` program, then
+    does everything on those objects -- the subsystems pull their code *by
+    name* from ``us``/``jp`` (never by which bank file it lives in) and fold
+    into ``english``, the base banks are hooked to reach them (unless
+    ``changes`` is off, the change-free baseline), and ``main.asm`` is wired.
+    Writing it back out -- base banks hooked in place, graft banks beside them
+    -- is the caller's :meth:`Rom.write`.
+    """
+    us = Rom.load(usdasm / "main.asm")
+    jp = Rom.load(jpdasm / "main.asm")
+    english = jp.copy()
+    for relocation in (
+        text(us, changes=changes),
+        font_upload(jp, changes=changes),
+        credits_bank(jp, us, changes=changes),
+        item_menu(us, jp, changes=changes),
+        file_select(us, jp, changes=changes),
         graphics(changes=changes),
         file_select_palette(),
-    ]
-    return [
-        placement
-        for relocation in relocations
-        for placement in relocation.placements()
-    ]
+    ):
+        english.add(relocation)
+    if changes:
+        apply_base_edits(english)
+    patch_main_asm(english)
+    return english
 
 
 def main() -> None:
@@ -866,7 +1062,7 @@ def main() -> None:
     parser.add_argument(
         "--baseline",
         action="store_true",
-        help="emit the change-free baseline (no graft edits or hook aliases)",
+        help="emit the change-free baseline (no graft edits or base hooks)",
     )
     parser.add_argument("--usdasm", type=Path, default=USDASM)
     parser.add_argument("--jpdasm", type=Path, default=JPDASM)
@@ -874,18 +1070,18 @@ def main() -> None:
         "--out",
         type=Path,
         default=Path(),
-        help="directory to write the bank_XX.asm files into",
+        help="jpdasm fork to write the whole English program into",
     )
     args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
-    written = write_banks(
-        placements(
-            changes=not args.baseline, usdasm=args.usdasm, jpdasm=args.jpdasm
-        ),
-        args.out,
+    english = build(
+        usdasm=args.usdasm, jpdasm=args.jpdasm, changes=not args.baseline
     )
+    generated = english.write(args.out, bank_header=bank_header)
     mode = "baseline" if args.baseline else "with changes"
-    print(f"wrote {len(written)} banks ({mode}): {', '.join(written)}")
+    print(
+        f"wrote English program ({mode}): "
+        f"{len(generated)} graft banks + base banks -> {args.out}"
+    )
 
 
 if __name__ == "__main__":

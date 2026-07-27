@@ -2,17 +2,17 @@
 # apply.sh -- deploy the English graft into a pristine jpdasm checkout.
 #
 # Turns a fork of spannerisms/jpdasm into a functional English translation by:
-#   1. hooking the base banks               (scripts/base_edits.py)
-#   2. generating the graft banks bank_20..bank_2E (scripts/generate.py)
-#   3. copying the asset extractor + build tooling
-#   4. patching main.asm (bank_2X includes + 2 MB padding)
-#   5. updating .gitignore (ROM-derived binaries stay out of git)
+#   1. generating the whole English program  (scripts/generate.py): the base
+#      banks hooked in place, the graft banks bank_20..bank_2E beside them, and
+#      main.asm wired (bank_2X includes + 2 MB padding) -- all in one Rom pass
+#   2. copying the asset extractor + build tooling
+#   3. updating .gitignore (ROM-derived binaries stay out of git)
 # The target ends up clean -- only the translation, none of this generator.
 #
 # Sources are fetched into .deps/ (gitignored) if missing:
 #   * snes-assembly-parser  (the parser library)
 #   * usdasm                (US disassembly -- pulled FROM)
-#   * jpdasm                (pristine JP -- the base_edits --src reference)
+#   * jpdasm                (pristine JP -- generate.py --jpdasm base reference)
 #
 # Usage:
 #   ./apply.sh --target /path/to/jpdasm-fork [--us-rom US.sfc] [--jp-rom JP.sfc]
@@ -94,19 +94,17 @@ fetch_repo "jpdasm" "$jpdasm" \
 export PYTHONPATH="$parser/src:$here/scripts"
 run_py() { python3 "$here/scripts/$@"; }
 
-echo "==> hooking base banks -> $target"
-run_py base_edits.py --src "$jpdasm" --dst "$target" $baseline
-
-echo "==> generating graft banks (bank_20 .. bank_2E) -> $target"
+echo "==> generating the English program -> $target"
+# generate.py loads the pristine JP as one Rom, folds in every relocated
+# subsystem, hooks the base banks to reach them, wires main.asm (graft-bank
+# includes + 2 MB padding), and writes the entire fork -- base banks hooked in
+# place, graft banks bank_20 .. bank_2E beside them.
 run_py generate.py --usdasm "$usdasm" --jpdasm "$jpdasm" \
     --out "$target" $baseline
 
 echo "==> copying build tooling"
 cp "$here/extract_english_assets.py" "$here/build_english_rom.sh" "$target/"
 chmod +x "$target/build_english_rom.sh"
-
-echo "==> patching main.asm"
-run_py mainasm.py "$target/main.asm"
 
 echo "==> updating .gitignore (ROM-derived binaries)"
 python3 "$here/scripts/gitignore.py" "$target/.gitignore"
