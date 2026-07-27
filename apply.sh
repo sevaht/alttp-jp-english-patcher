@@ -120,7 +120,7 @@ fi
 
 if [ -n "$verify" ]; then
     echo "==> verifying base edits"
-    run_py verify_base.py --src "$jpdasm"
+    run_py verify_base.py --src "$jpdasm" --usdasm "$usdasm"
 fi
 
 echo "done. build the target with:  cd $target && ./build_english_rom.sh --jp-rom JP.sfc --us-rom US.sfc"

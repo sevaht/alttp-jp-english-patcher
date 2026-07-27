@@ -198,13 +198,39 @@ class Relocation:
     pieces at once, so a reference in one piece to a definition in another
     stays in step; ``hooks`` and ``shared`` are applied uniformly (a hook alias
     only materialises in the piece that defines it, so this is safe).
+
+    A relocation is also the single source of truth for what it *hooks*. A
+    generator lists the JP entry points it intercepts in :attr:`hooked` and the
+    blocks it carries along in :attr:`relocated`; the driver frees every hooked
+    name in the base and then, *per name*, either lets the relocated copy claim
+    a bare alias (recorded in :attr:`hooks`) or -- when a same-bank caller
+    stays behind and cannot reach the copy -- lays a landing-pad stub in
+    :attr:`pad_region`. Which of the two a hook needs is computed from the
+    program's callers (:meth:`snes_assembly_parser.Rom.needs_landing_pad`), not
+    declared, so a hooked function is described once, here.
     """
 
+    #: The JP entry points this relocation intercepts, in the order a landing
+    #: pad would lay them (freed in the base; each becomes an alias or a pad).
+    hooked: tuple[str, ...] = ()
+    #: The source blocks this relocation carries with it. A hooked name's
+    #: same-bank caller only forces a pad if its block is *not* in here (it
+    #: stays behind); a caller that moves along reaches the copy directly.
+    relocated: frozenset[str] = field(default_factory=frozenset)
+    #: Free-ROM (``NULL_``) label to lay landing-pad stubs in, and their header
+    #: comment -- for the hooks a caller-analysis decides need one.
+    pad_region: str | None = None
+    pad_header: tuple[str, ...] = ()
+    #: Optional comment lines to annotate a freed base definition with (why the
+    #: JP name is dead / where its data went), keyed by hook name.
+    hook_notes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: The hooked names that claim a bare alias in the relocated code (the ones
+    #: *not* given a pad). Derived by the driver's hook wiring, not declared.
     hooks: frozenset[str] = field(default_factory=frozenset)
     shared: frozenset[str] = field(default_factory=frozenset)
     #: When ``False`` (the change-free baseline), no :attr:`hooks` alias is
     #: emitted -- the relocated names stay purely ``EN_``, so no unmodified
-    #: caller is redirected. Lets a subsystem declare its real hook set once.
+    #: caller is redirected.
     changes: bool = True
     _pieces: list[tuple[int, Assembly | str, str, bool]] = field(
         default_factory=list

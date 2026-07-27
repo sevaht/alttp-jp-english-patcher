@@ -34,6 +34,7 @@ from snes_assembly_parser import (
     Rom,
     data,
     datas,
+    dbr_trampolines,
     instructions,
     note,
     notes,
@@ -43,6 +44,25 @@ from graft import Relocation, bank_header, mirror, require_start, substitute
 
 USDASM = Path("../usdasm")
 JPDASM = Path("../jpdasm")
+
+# A landing-pad block's header comment: the real routines live a bank away, the
+# freed JP entry-point names stay here and forward with a JSL/RTS bridge.
+_REDIRECT_HEADER = (
+    "; [ENG-REDIRECT] Landing pads: the real routines run in bank ${bank} "
+    "(english/{file}).",
+    "; They keep the JP entry-point names so unmodified same-bank JSR callers "
+    "land here and",
+    "; forward across the bank with a register-transparent JSL/RTS bridge (an "
+    "argument in",
+    "; A/X/Y passes straight through); the JP originals are preserved "
+    "above as UNREACHABLE_*.",
+)
+
+
+def _redirect(bank: str, file: str) -> tuple[str, ...]:
+    return tuple(
+        line.format(bank=bank, file=file) for line in _REDIRECT_HEADER
+    )
 
 
 def text(us: Rom, *, changes: bool) -> Relocation:
@@ -59,8 +79,16 @@ def text(us: Rom, *, changes: bool) -> Relocation:
         "CreateMessagePointers",
         "TextCommandLengths",
     )
-    engine_hooks = frozenset(
-        {"RenderText", "Module0E_02_RenderText", "CreateMessagePointers"}
+    # Every JP name this subsystem intercepts (freed in the base). The first
+    # three claim a bare alias in the relocated engine; the last two are the
+    # override stubs below (placed verbatim, already carrying a bare alias).
+    # None have a same-bank caller, so all resolve to aliases (no pad).
+    engine_hooks = (
+        "RenderText",
+        "Module0E_02_RenderText",
+        "CreateMessagePointers",
+        "DecompressFontGFX",
+        "BuildSomeTextMasks",
     )
     shared = frozenset({"TheFont", "TheFont_end"})  # left un-namespaced
     gap_notes = {
@@ -230,7 +258,9 @@ def text(us: Rom, *, changes: bool) -> Relocation:
     overflow_note = "MESSAGE overflow (US bank_0E)"
     overflow_note += " + re-appended cursor prompts." if changes else "."
 
-    relocation = Relocation(hooks=engine_hooks, shared=shared, changes=changes)
+    relocation = Relocation(
+        hooked=engine_hooks, shared=shared, changes=changes
+    )
     # Our VWF text font (font.2bpp); a raw blob (TheFont/TheFont_end stay bare,
     # shared), read by the engine and the bank_00 upload.
     relocation.place(
@@ -301,9 +331,7 @@ def font_upload(jp: Rom, *, changes: bool) -> Relocation:
                 " US form (JP uploaded a $7E2000 VWF buffer)."
             ),
         )
-    relocation = Relocation(
-        hooks=frozenset({root}), shared=shared, changes=changes
-    )
+    relocation = Relocation(hooked=(root,), shared=shared, changes=changes)
     relocation.place_mirror(
         routine, "bank-$00 TransferFontToVRAM (mirror of JP $00E596)."
     )
@@ -377,24 +405,24 @@ def credits_bank(jp: Rom, us: Rom, *, changes: bool) -> Relocation:
             msg = f"glyph splice: wrote {index} of {len(values)} entries"
             raise ValueError(msg)
 
-    def return_long(group: Assembly) -> None:
-        # The group's final RTS -> RTL (same size).
-        for line in reversed(group.lines):
-            if line.opcode == "RTS":
-                line.opcode = "RTL"
-                return
-            if line.opcode is not None:
-                break
-        msg = "return_long: group does not end in RTS"
-        raise ValueError(msg)
-
-    relocation = Relocation()
+    # The two readers are the hooks; they are reached across banks by a
+    # same-bank caller in bank_0E's credits driver (which does NOT relocate),
+    # so caller-analysis will give each a landing pad in bank_0E's freed ROM.
+    relocation = Relocation(
+        hooked=readers,
+        relocated=frozenset(
+            block.name for blocks, _ in groups for block in blocks
+        ),
+        pad_region="NULL_0EEDFB",
+        pad_header=_redirect("2E", "en_credits.asm"),
+        changes=changes,
+    )
     for blocks, glyph_blocks in groups:
         group = jp.concat(list(blocks))
         if changes:
             splice_us_glyphs(group, us_glyph_values(glyph_blocks))
             if any(block.name in readers for block in blocks):
-                return_long(group)
+                group.return_long()
         start = require_start(group)
         relocation.place(
             group,
@@ -438,30 +466,6 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
         "ItemIcons",
         "AbilityText",
     )
-
-    def trampolines() -> Assembly:
-        # Four DBR-setting redirect stubs; bare names (namespaced to EN_
-        # uniformly), anchors stamped when placed.
-        lines: list[Line] = []
-        for name in entries:
-            lines.append(note(f"{name}:"))
-            lines += instructions(["PHB", "PHK", "PLB", f"JMP.w {name}_body"])
-        return Assembly(lines)
-
-    def return_long(segment: Assembly) -> None:
-        # Final RTS -> PLB + RTL (restore the caller's DBR before returning).
-        for index in range(len(segment.lines) - 1, -1, -1):
-            line = segment.lines[index]
-            if line.opcode == "RTS":
-                line.opcode, line.arguments = "PLB", []
-                rtl = Line.from_line(f"#_{line.address:06X}: RTL")
-                rtl.size = 1
-                segment.lines.insert(index + 1, rtl)
-                return
-            if line.opcode is not None:
-                break
-        msg = "return_long: body does not end in RTS"
-        raise ValueError(msg)
 
     def duplicate_mirror(region: Assembly) -> None:
         # US ItemMenuNameText_Mirror is 2 dw rows; the JP slot wants 4, so copy
@@ -507,17 +511,30 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
                     line.arguments = jp_rows[row]
                 row += 1
 
-    relocation = Relocation()
+    # The four entries are the hooks. Their same-bank JSR callers (the item-
+    # menu dispatch) stay in bank_0D, so caller-analysis gives each a landing
+    # pad in bank_0D's freed ROM (the bare name -> a DBR trampoline here). The
+    # relocated blocks (bodies + name-text + cursor) are what moves along.
+    relocation = Relocation(
+        hooked=entries,
+        relocated=frozenset(
+            [us_name for us_name, _, _ in bodies]
+            + [*name_text, "MenuCursorPositions"]
+        ),
+        pad_region="NULL_0DAFDD",
+        pad_header=_redirect("2D", "en_item_menu.asm"),
+        changes=changes,
+    )
 
     def place(body: Assembly, org: int) -> None:
         relocation.place(body, org, f"item-menu @ ${org:06X}.")
 
     if changes:
-        place(trampolines(), 0x2DE100)
+        place(dbr_trampolines(entries), 0x2DE100)
     for us_name, en_name, long_return in bodies:
         body = us.function(us_name, comments=False)
         if changes and long_return:
-            return_long(body)
+            body.return_long(restore_bank=True)  # PLB before RTL (DBR restore)
         if en_name != us_name:
             body.lines[0].label = en_name  # rename the routine label
         place(body, mirror(require_start(body)))
@@ -705,7 +722,14 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
     lines = []
     for name in block_order:
         lines += block_segment(name).lines
-    relocation = Relocation(hooks=hooks, changes=changes)
+    # The entry points are the hooks; the whole recursive closure is what
+    # relocates, so the one same-bank caller (a BRL inside FileSelect_
+    # HandleInput, itself relocated) moves along -> every hook is an alias.
+    relocation = Relocation(
+        hooked=tuple(sorted(hooks)),
+        relocated=frozenset(entry.name for entry in reachable),
+        changes=changes,
+    )
     relocation.place(Assembly(lines), 0x2C8000, "file-select, packed.")
     return relocation
 
@@ -723,11 +747,29 @@ def graphics(*, changes: bool) -> Relocation:
         ("GFX_DD", "gfx_dd.2bppc"),  # US menu / file-select font sheet ($6A)
         ("GFX_39", "gfx_39.3bppc"),  # US file-select "linoleum" bg ($39)
     )
+    # Why each freed JP sheet is dead (annotates the base definition).
+    dead_notes = {
+        "GFX_39": (
+            "; [ENG-GFX] JP menu-bg sheet $39 repointed at the US linoleum "
+            "(GFX_39, usgfx.asm);",
+            "; this JP data is no longer referenced.",
+        ),
+        "GFX_DC": (
+            "; [ENG-GFX] JP menu-font sheet $69 repointed at the US font "
+            "(GFX_DC, usgfx.asm).",
+        ),
+        "GFX_DD": (
+            "; [ENG-GFX] JP $6A repointed at the US font (GFX_DD, usgfx.asm); "
+            "data stays live via GFX_71.",
+        ),
+    }
     body = "\n\n".join(
         f'{name}:\n    incbin "english/{asset}"' for name, asset in sheets
     )
     relocation = Relocation(
-        hooks=frozenset(name for name, _ in sheets), changes=changes
+        hooked=tuple(name for name, _ in sheets),
+        hook_notes=dead_notes,
+        changes=changes,
     )
     relocation.place(
         body, 0x268000, "US graphics sheets (menu/HUD + file-select)."
@@ -806,60 +848,54 @@ USFS_Palette:
 
 
 # ---------------------------------------------------------------------------
-# base-disassembly hooks
+# base-disassembly edits
 # ---------------------------------------------------------------------------
-# The graft relocates whole subsystems into the expanded ROM (2nd MB); these
-# are the small edits that make the unmodified JP banks reach the relocated
-# copies. They are applied *by name or #_ address anchor* through the whole-
-# program :class:`Rom`, so each fails loud if its target has drifted upstream
-# and never depends on which file a routine happens to live in.
-_REDIRECT_HEADER = (
-    "; [ENG-REDIRECT] Landing pads: the real routines run in bank ${bank} "
-    "(english/{file}).",
-    "; They keep the JP entry-point names so unmodified same-bank JSR callers "
-    "land here and",
-    "; forward across the bank with a register-transparent JSL/RTS bridge (an "
-    "argument in",
-    "; A/X/Y passes straight through); the JP originals are preserved "
-    "above as UNREACHABLE_*.",
-)
-
-
-def _redirect(bank: str, file: str) -> tuple[str, ...]:
-    return tuple(
-        line.format(bank=bank, file=file) for line in _REDIRECT_HEADER
-    )
-
-
-def _en_pad(name: str, comment: tuple[str, ...] = ()) -> LandingPad:
+# Reaching the relocated graft from the unmodified JP banks has two parts, both
+# keyed *by name or #_ address anchor* through the whole-program Rom (never by
+# which file a routine lives in, and failing loud on upstream drift):
+#   * _wire_hooks -- the base half of every hook, DERIVED from the relocations
+#     and the program's callers: free each hooked JP name, and decide per name
+#     whether the relocated copy's bare alias suffices or a landing pad is
+#     needed (a same-bank caller stays behind). Nothing to re-list here.
+#   * apply_base_edits -- the few edits that are NOT a plain hook.
+def _en_pad(name: str) -> LandingPad:
     """A landing pad forwarding the freed JP ``name`` to its ``EN_`` copy."""
-    return LandingPad(name, f"EN_{name}", comment)
+    return LandingPad(name, f"EN_{name}")
+
+
+def _wire_hooks(english: Rom, jp: Rom, relocations: list[Relocation]) -> None:
+    """Wire the base half of every hook, deciding alias-vs-pad from callers.
+
+    For each relocation: split its :attr:`~graft.Relocation.hooked` names into
+    the ones a bare alias reaches (recorded back on the relocation as
+    ``hooks``, for ``EN_`` namespacing) and the ones a same-bank caller strands
+    (given a landing pad in the relocation's ``pad_region``). Then free every
+    hooked name in the base. Run *before* the relocations are added, so the
+    alias set it records is the one their pieces emit.
+    """
+    for relocation in relocations:
+        pad_names = tuple(
+            name
+            for name in relocation.hooked
+            if jp.needs_landing_pad(name, relocated=relocation.relocated)
+        )
+        relocation.hooks = frozenset(relocation.hooked) - frozenset(pad_names)
+        for name in relocation.hooked:
+            english.hook(name, comment=relocation.hook_notes.get(name, ()))
+        if pad_names:
+            if relocation.pad_region is None:
+                msg = f"hooks {pad_names} need a pad but no pad_region is set"
+                raise ValueError(msg)
+            english.landing_pads(
+                relocation.pad_region,
+                [_en_pad(name) for name in pad_names],
+                header=relocation.pad_header,
+            )
 
 
 def apply_base_edits(english: Rom) -> None:
-    """Hook the pristine JP program to reach the relocated English graft."""
-    # -- TEXT engine + credits (relocated to bank $2E) --
-    english.hook("Credits_AddNextAttribution")
-    english.hook("Credits_AddEndingSequenceText")
-    english.landing_pads(
-        "NULL_0EEDFB",
-        [
-            _en_pad("Credits_AddNextAttribution"),
-            _en_pad("Credits_AddEndingSequenceText"),
-        ],
-        header=_redirect("2E", "en_credits.asm"),
-    )
-    for name in (
-        "RenderText",
-        "Module0E_02_RenderText",
-        "DecompressFontGFX",
-        "BuildSomeTextMasks",
-    ):
-        english.hook(name)
-    # JP keeps CreateMessagePointers in bank $1C (US had it in bank $0E).
-    english.hook("CreateMessagePointers")
-
-    # -- FONT upload + file-select (bank $00 hooks; FS goes to bank $2C) --
+    """Apply the base edits that are not plain hooks (see _wire_hooks)."""
+    # V-IRQ active block -> the relocated name-entry raster-split handler.
     english.relocate_block(
         0x008205,
         "EN_IRQActiveHandler",
@@ -870,6 +906,8 @@ def apply_base_edits(english: Rom) -> None:
             "(us_menu.asm).",
         ),
     )
+    # Byte-neutral operand swaps: US BG3 blank tile, the US 126-tile text box,
+    # and the three font-upload operands (-> our TheFont, uploaded to $E000).
     english.set_operand(
         0x008335,
         "LDA.w #$00A9",
@@ -883,69 +921,11 @@ def apply_base_edits(english: Rom) -> None:
     english.set_operand(0x00E557, "LDA.b #TheFont>>16")
     english.set_operand(0x00E563, "LDA.w #TheFont")
     english.set_operand(0x00E568, "LDX.w #(TheFont_end-TheFont)/2-1")
-    english.hook("TransferFontToVRAM")
-
-    # File-select modules relocated/compacted to bank $2C: re-pin the FairyY
-    # data left behind, free the module names, repoint the one in-bank ref.
+    # File-select: re-pin the FairyY data the relocation left behind, and keep
+    # the one in-bank CopySaveToWRAM reference on the preserved JP original.
     english.insert_before("FileSelect_FairyY", ["org $0CCC67"])
-    for name in (
-        "Module01_FileSelect",
-        "CopySaveToWRAM",
-        "Module02_CopyFile",
-        "Module03_KILLFile",
-        "Module04_NameFile",
-        "IntroLogoTilemap",
-        "FileSelectTilemap",
-        "FileSelectKILLFileTilemap",
-        "FileSelectCopyFileTilemap",
-        "NamePlayerTilemap",
-    ):
-        english.hook(name)
     english.rewrite_reference(
         0x0CCE8B, "CopySaveToWRAM", "UNREACHABLE_CopySaveToWRAM"
-    )
-
-    # -- ITEM MENU (relocated to bank $2D) --
-    for name in (
-        "UpdateBottleMenu",
-        "DrawAbilityText",
-        "SetLiftText",
-        "DrawEquippedYItem",
-    ):
-        english.hook(name)
-    english.landing_pads(
-        "NULL_0DAFDD",
-        [
-            _en_pad("UpdateBottleMenu"),
-            _en_pad("DrawAbilityText"),
-            _en_pad("SetLiftText"),
-            _en_pad("DrawEquippedYItem"),
-        ],
-        header=_redirect("2D", "en_item_menu.asm"),
-    )
-
-    # -- GRAPHICS: JP menu sheets repointed at the US art (bank $26) --
-    english.hook(
-        "GFX_39",
-        comment=(
-            "; [ENG-GFX] JP menu-bg sheet $39 repointed at the US linoleum "
-            "(GFX_39, usgfx.asm);",
-            "; this JP data is no longer referenced.",
-        ),
-    )
-    english.hook(
-        "GFX_DC",
-        comment=(
-            "; [ENG-GFX] JP menu-font sheet $69 repointed at the US font "
-            "(GFX_DC, usgfx.asm).",
-        ),
-    )
-    english.hook(
-        "GFX_DD",
-        comment=(
-            "; [ENG-GFX] JP $6A repointed at the US font (GFX_DD, usgfx.asm); "
-            "data stays live via GFX_71.",
-        ),
     )
 
 
@@ -1041,7 +1021,7 @@ def build(*, usdasm: Path, jpdasm: Path, changes: bool) -> Rom:
     us = Rom.load(usdasm / "main.asm")
     jp = Rom.load(jpdasm / "main.asm")
     english = jp.copy()
-    for relocation in (
+    relocations = [
         text(us, changes=changes),
         font_upload(jp, changes=changes),
         credits_bank(jp, us, changes=changes),
@@ -1049,10 +1029,15 @@ def build(*, usdasm: Path, jpdasm: Path, changes: bool) -> Rom:
         file_select(us, jp, changes=changes),
         graphics(changes=changes),
         file_select_palette(),
-    ):
+    ]
+    # Wire hooks first: it classifies each hook (alias vs pad) from the
+    # pristine JP's callers and records the alias set the pieces then emit.
+    if changes:
+        _wire_hooks(english, jp, relocations)
+    for relocation in relocations:
         english.add(relocation)
     if changes:
-        apply_base_edits(english)
+        apply_base_edits(english)  # the few edits that are not plain hooks
     patch_main_asm(english)
     return english
 

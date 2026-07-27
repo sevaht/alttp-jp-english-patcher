@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Regression guard for :func:`generate.apply_base_edits`.
+"""Regression guard for the generated base banks.
 
-Applies the base-bank hooks to a pristine jpdasm checkout and compares each
-hooked bank's *assembler-relevant signature* (label|opcode|args per content
-line -- comments and blank lines ignored, since they do not affect assembly)
-against a frozen hash in ``reference_hashes.txt``. A mismatch means either the
-edits changed or an upstream bank drifted; a clean run means the generated
-hooks still reproduce the reviewed result.
+Builds the whole English program from pristine jpdasm + usdasm checkouts and
+compares each hooked base bank's *assembler-relevant signature* (label|opcode|
+args per content line -- comments and blank lines ignored, since they do not
+affect assembly) against a frozen hash in ``reference_hashes.txt``. A mismatch
+means either the edits changed or an upstream bank drifted; a clean run means
+the generated base edits still reproduce the reviewed result.
 
-    python3 verify_base.py --src /path/to/pristine/jpdasm
-    python3 verify_base.py --src ... --freeze   # (re)write the reference
+    python3 verify_base.py --src /path/to/jpdasm --usdasm /path/to/usdasm
+    python3 verify_base.py --src ... --usdasm ... --freeze  # rewrite reference
 """
 
 from __future__ import annotations
@@ -20,12 +20,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from snes_assembly_parser import Assembly, Rom
+from snes_assembly_parser import Assembly
 
-from generate import apply_base_edits
+from generate import build
 
 REFERENCE = Path(__file__).with_name("reference_hashes.txt")
-# The banks apply_base_edits hooks (the only base banks it changes).
+# The base banks the graft hooks (the only base banks it changes).
 BASE_BANKS = (
     "bank_00",
     "bank_0C",
@@ -47,10 +47,9 @@ def signature_hash(path: Path) -> str:
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
-def compute(src: Path) -> dict[str, str]:
+def compute(jpdasm: Path, usdasm: Path) -> dict[str, str]:
     with tempfile.TemporaryDirectory() as temp_dir:
-        english = Rom.load(src / "main.asm")
-        apply_base_edits(english)
+        english = build(usdasm=usdasm, jpdasm=jpdasm, changes=True)
         english.write(Path(temp_dir))
         return {
             bank: signature_hash(Path(temp_dir) / f"{bank}.asm")
@@ -75,16 +74,20 @@ def main() -> int:
         "--src", type=Path, required=True, help="pristine jpdasm checkout"
     )
     parser.add_argument(
+        "--usdasm", type=Path, required=True, help="pristine usdasm checkout"
+    )
+    parser.add_argument(
         "--freeze",
         action="store_true",
         help="write current hashes to reference_hashes.txt, don't check",
     )
     args = parser.parse_args()
-    if not args.src.exists():
-        print(f"error: pristine jpdasm {args.src} not found", file=sys.stderr)
-        return 2
+    for label, path in (("jpdasm", args.src), ("usdasm", args.usdasm)):
+        if not path.exists():
+            print(f"error: pristine {label} {path} not found", file=sys.stderr)
+            return 2
 
-    got = compute(args.src)
+    got = compute(args.src, args.usdasm)
     if args.freeze:
         body = "".join(f"{bank}: {got[bank]}\n" for bank in sorted(got))
         REFERENCE.write_text(

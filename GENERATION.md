@@ -56,21 +56,30 @@ They are regenerated on the target from your US ROM by
 hand later).
 
 * **`generate.py`** does everything on one whole-program `Rom`:
-  * **`build()`** loads the pristine JP, `add`s every relocated subsystem,
-    `apply_base_edits`, wires `main.asm`, and returns the `Rom`; `Rom.write`
-    emits the fork.
+  * **`build()`** loads the pristine US and JP, `add`s every relocated
+    subsystem, wires the hooks + the few non-hook base edits + `main.asm`, and
+    returns the `Rom`; `Rom.write` emits the fork.
   * **the subsystem functions** (`text`, `font_upload`, `credits_bank`,
     `item_menu`, `file_select`, `graphics`, `file_select_palette`) relocate
     each subsystem into the expanded ROM (2nd MB) under the `EN_` namespace,
     pulling what they need *by name* from the US and/or JP disassembly and
     applying the documented English edits (no hand-maintained relocated
-    assembly). `Rom.write` regroups the placed pieces into the per-bank
+    assembly). Each also **declares what it hooks**: the entry-point names in
+    `hooked`, and the blocks it carries in `relocated` — not *how* each is
+    reached. `Rom.write` regroups the placed pieces into the per-bank
     `bank_2X.asm` files.
-  * **`apply_base_edits()`** hooks the pristine JP banks so unmodified JP
-    callers reach the relocated code: `UNREACHABLE_` renames, same-bank
-    landing-pad trampolines, one inline-block `JML` redirect (the V-IRQ
-    handler), and a few byte-neutral operand swaps — all located by label/`#_`
-    anchor (never a line number), so an edit fails loud if upstream drifts.
+  * **`_wire_hooks()`** applies the base half of every hook, *derived from the
+    relocations and the program's callers*. It frees each hooked JP name
+    (`UNREACHABLE_` rename) and, per name, uses `Rom.needs_landing_pad` to decide
+    how the bare name is re-claimed: a same-bank caller that stays behind (not in
+    the relocation's `relocated` set) gets a register-transparent `JSL EN_name /
+    RTS` landing pad; otherwise the relocated copy's bare alias suffices. The
+    driver never states which — it falls out of who calls what.
+  * **`apply_base_edits()`** adds the few edits that are *not* plain hooks: one
+    inline-block `JML` redirect (the V-IRQ handler), a few byte-neutral operand
+    swaps, one re-pinned data `org`, one live reference kept on the original —
+    all located by label/`#_` anchor (never a line number), so an edit fails
+    loud if upstream drifts.
 
 ## Prerequisites
 

@@ -51,10 +51,12 @@ assembly changes.
 ```
 apply.sh                     the one entry point (orchestrator)
 scripts/                     the generator toolkit
-  graft.py                   relocation + EN_ namespacing + bank_header
+  graft.py                   relocation + EN_ namespacing + hook/pad decls
   generate.py                the whole program: build() on one Rom -- every
                              subsystem (text/menu/item-menu/credits/font/
-                             graphics/palette) + apply_base_edits + main.asm
+                             graphics/palette) declares what it hooks;
+                             _wire_hooks derives frees + alias-or-pad from
+                             the program's callers (Rom.needs_landing_pad)
   gitignore.py               target .gitignore patcher
   verify_base.py             regression guard (frozen hashes)
   reference_hashes.txt       expected base-edit signatures
@@ -67,5 +69,6 @@ checks  pyproject.toml       lint/typecheck the scripts (needs uv)
 
 * `./checks` — format, type-check, lint, dead-code-scan `scripts/*.py` (needs
   `uv`; run `./apply.sh` once first, or set `SNES_PARSER_DIR`).
-* `python3 scripts/verify_base.py --src .deps/jpdasm` — confirm the base edits
-  still reproduce the frozen reference signatures.
+* `python3 scripts/verify_base.py --src .deps/jpdasm --usdasm .deps/usdasm` —
+  confirm the generated base banks still reproduce the frozen reference
+  signatures.
