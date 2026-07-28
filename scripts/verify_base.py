@@ -25,7 +25,7 @@ from snes_assembly_parser import Assembly
 from generate import build
 
 REFERENCE = Path(__file__).with_name("reference_hashes.txt")
-# The base banks the graft changes (hooked, plus bank_1B's owanim_00 fill).
+# The base banks the graft hooks (the only base banks it changes).
 BASE_BANKS = (
     "bank_00",
     "bank_0C",
@@ -33,7 +33,6 @@ BASE_BANKS = (
     "bank_0E",
     "bank_13",
     "bank_18",
-    "bank_1B",
     "bank_1C",
 )
 
