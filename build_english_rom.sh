@@ -86,7 +86,7 @@ rm -f "$LOG"
 MD5=$(md5sum "$OUT" | cut -d' ' -f1)
 echo
 echo "SUCCESS -> $OUT  ($(stat -c%s "$OUT") bytes, md5 $MD5)"
-REFERENCE_MD5="57b5ccc203b7192020a1d3d464a507be"
+REFERENCE_MD5="e370653b5c5f3cc12f1474d14d222c53"
 if [ "$MD5" = "$REFERENCE_MD5" ]; then
   echo "  (verified: matches the reference English build)"
 else

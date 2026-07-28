@@ -38,7 +38,7 @@ ASSET_MD5 = {
     "gfx_dc.2bppc":   "1dc3ce334108dc118e481a84d8368b65",  # US menu/FS font sheet (compressed slice)
     "gfx_dd.2bppc":   "e97ca7c5551d6de2ca7ca98effd99c81",  # US menu/FS font sheet (compressed slice)
     "gfx_39.3bppc":   "c79da8a80348417038634560a9486110",  # US file-select "linoleum" bg (compressed slice)
-    "usfs_pal.bin":    "086d4205e44e57b0427b7ea95b27c8b9",  # four US file-select palettes (PaletteData slices)
+    "usfs_pal.bin":    "8a894853069c005ac90d9134e899ce43",  # three US file-select palettes (PaletteData slices)
 }
 
 def md5(b): return hashlib.md5(b).hexdigest()
@@ -101,17 +101,19 @@ def main():
     #    are decompressed natively by LoadDefaultGraphics (LoadFileSelectGraphics restored to the US
     #    form). See AGENTS.md §10 / DETAILS.md §2.6. The former usfsfont.bin blob is gone.
 
-    # 5. File-select palette — the four US palettes that come out different from the US original
-    #    when the game's shared palette-load routines run on the JP ROM (CGRAM rows 5, 7, 9, 11,
-    #    colors 1-7 each). Each is a plain slice of the US ROM's PaletteData table; usfs_gfx.asm
-    #    overlays them onto the $7EC500 CGRAM buffer. Rows 5/7 are US-specific palette DATA (row 7
-    #    is the wood name-banner); rows 9/11 hold identical ROM bytes JP<->US but the ported US
-    #    file-select indexes a different palette there. (Offsets are PaletteData entries in bank
-    #    $1B: $1BD9AA, PaletteData_owanim_00 $1BE604, PaletteData $1BD218, $1BD254.)
+    # 5. File-select palette — three US palettes that come out different from the US original when
+    #    the game's shared palette-load routines run on the JP ROM (CGRAM rows 5, 9, 11, colors 1-7
+    #    each). Each is a plain slice of the US ROM's PaletteData table; generate.py's overlay
+    #    writes them onto the $7EC300/$7EC500 CGRAM buffers. Rows 9/11 hold identical ROM bytes
+    #    JP<->US but the ported US file-select indexes a different sprite palette there. (Offsets
+    #    are PaletteData entries in bank $1B: $1BD9AA, PaletteData.sprite_00 $1BD218, .sprite_02
+    #    $1BD254.)
+    #    Row 7 (the wood name-banner) is NOT here: generate.py's apply_base_edits fills JP's empty
+    #    PaletteData_owanim_00 ($1BE604) with the US bytes, so the file-select loads it natively.
     #    (Row 5 looks static-unneeded -- set $06 is identical US<->JP and $1BD9AA is in set $03 --
     #    but removing it was tested and mis-coloured the wooden borders, so it is load-bearing.)
     ok &= write_asset("usfs_pal.bin",
-                      us[0xDD9AA:0xDD9AA + 14] + us[0xDE604:0xDE604 + 14] +
+                      us[0xDD9AA:0xDD9AA + 14] +
                       us[0xDD218:0xDD218 + 14] + us[0xDD254:0xDD254 + 14])
 
     if not ok:

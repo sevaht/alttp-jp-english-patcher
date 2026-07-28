@@ -42,7 +42,7 @@ assembly changes.
 
 | Step | Script | Result in the target |
 | --- | --- | --- |
-| Generate the whole program | `scripts/generate.py` | base `bank_00/0C/0D/0E/13/18/1C.asm` hooked in place; graft `bank_20/22/23/26/27/2C/2D/2E.asm` beside them; `main.asm` wired (`bank_2X` includes + 2 MB padding); every untouched unit round-tripped |
+| Generate the whole program | `scripts/generate.py` | base `bank_00/0C/0D/0E/13/18/1C.asm` hooked in place (+ `bank_1B` owanim_00 fill); graft `bank_20/22/23/26/27/2C/2D/2E.asm` beside them; `main.asm` wired (`bank_2X` includes + 2 MB padding); every untouched unit round-tripped |
 | Deploy tooling | `apply.sh` | `extract_english_assets.py` + `build_english_rom.sh` |
 | Ignore binaries | `scripts/gitignore.py` | `.gitignore` excludes the ROM-derived `english/*` blobs |
 

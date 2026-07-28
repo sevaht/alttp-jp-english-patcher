@@ -778,18 +778,22 @@ def graphics(*, changes: bool) -> Relocation:
 
 
 def file_select_palette() -> Relocation:
-    """Bank ``$27``: the file-select US palette overlay. Four CGRAM rows differ
-    JP<->US; ``USFS_PaletteLoadForFileSelect`` runs the stock US load and then
-    overlays those four US palettes (US-ROM ``PaletteData`` slices,
+    """Bank ``$27``: the file-select US palette overlay. Three CGRAM rows
+    differ JP<->US; ``USFS_PaletteLoadForFileSelect`` runs the stock load then
+    overlays those three US palettes (US-ROM ``PaletteData`` slices,
     ``incbin``\\ 'd from ``english/usfs_pal.bin``). ``file_select`` repoints
     the one ``JSL`` at it.
+
+    Row 7 (the wood name-banner) is NOT overlaid: ``apply_base_edits`` fills
+    JP's empty ``owanim_00`` slot with the US palette, so the file-select's
+    stock ``PaletteLoad_OWBG3`` loads it into row 7 natively.
 
     NOTE on row 5: statically it looks unneeded -- the file-select drives
     ``PaletteLoad_UnderworldSet`` with ``$0AB6 = #$06`` (dungeon set $06, which
     is byte-identical US<->JP), and the overlaid slice ($1BD9AA) is in set $03.
     But dropping it was tested and turned the wooden file-select borders the
     wrong colour, so the runtime CGRAM ends up needing it after all -- the load
-    path is more involved than the static read suggests. Keep all four rows.
+    path is more involved than the static read suggests. Keep it.
     """
     relocation = Relocation()
     relocation.place(
@@ -811,17 +815,8 @@ USFS_PaletteLoadForFileSelect:
     CPX.w #$000E
     BNE .row5
     LDX.w #$0000
-.row7
-    LDA.l USFS_Palette+$0E,X
-    STA.l $7EC3E2,X
-    STA.l $7EC5E2,X
-    INX
-    INX
-    CPX.w #$000E
-    BNE .row7
-    LDX.w #$0000
 .row9
-    LDA.l USFS_Palette+$1C,X
+    LDA.l USFS_Palette+$0E,X
     STA.l $7EC422,X
     STA.l $7EC622,X
     INX
@@ -830,7 +825,7 @@ USFS_PaletteLoadForFileSelect:
     BNE .row9
     LDX.w #$0000
 .row11
-    LDA.l USFS_Palette+$2A,X
+    LDA.l USFS_Palette+$1C,X
     STA.l $7EC462,X
     STA.l $7EC662,X
     INX
@@ -844,7 +839,7 @@ USFS_PaletteLoadForFileSelect:
     PLP
     RTL
 
-; Four US file-select palettes (colors 1-7 each), CGRAM-row order 5, 7, 9, 11.
+; Three US file-select palettes (colors 1-7 each), CGRAM-row order 5, 9, 11.
 USFS_Palette:
     incbin "english/usfs_pal.bin\"""",
         0x278000,
@@ -900,8 +895,24 @@ def _wire_hooks(english: Rom, jp: Rom, relocations: list[Relocation]) -> None:
             )
 
 
-def apply_base_edits(english: Rom) -> None:
+def apply_base_edits(english: Rom, us: Rom) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
+    # Fill JP's empty owanim_00 palette slot with the US wood-banner palette,
+    # so the file-select loads its row-7 banner natively (the stock
+    # PaletteLoad_OWBG3 the ported init already calls, with $0AB8 = 0). The
+    # values are pulled from usdasm (never committed); size-preserving (7 dw
+    # either way). This replaces the overlay's row-7 loop.
+    owanim_00 = 0x1BE604
+    us_owanim = next(
+        line
+        for line in us.units[us.unit_at(owanim_00)].lines
+        if line.address == owanim_00
+    )
+    english.set_operand(
+        owanim_00,
+        f"dw {', '.join(us_owanim.arguments)}",
+        comment="[ENG-FS] US wood-banner palette (owanim_00; JP slot empty)",
+    )
     # V-IRQ active block -> the relocated name-entry raster-split handler.
     english.relocate_block(
         0x008205,
@@ -1044,7 +1055,7 @@ def build(*, usdasm: Path, jpdasm: Path, changes: bool) -> Rom:
     for relocation in relocations:
         english.add(relocation)
     if changes:
-        apply_base_edits(english)  # the few edits that are not plain hooks
+        apply_base_edits(english, us)  # the few edits that are not plain hooks
     patch_main_asm(english)
     return english
 
