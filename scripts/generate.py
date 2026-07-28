@@ -28,6 +28,7 @@ from pathlib import Path
 from snes_assembly_parser import (
     Assembly,
     Block,
+    Edit,
     LandingPad,
     Line,
     Pool,
@@ -104,63 +105,73 @@ def text(us: Rom, *, changes: bool) -> Relocation:
         # field slots (DEX DEX) and trim. The two slot-5/6 copy writes become
         # DEX DEX + NOP ($EA) fill of the SAME 12 bytes, so the routine stays
         # byte-identical to stock US -- nothing downstream shifts.
-        engine.replace("CPY.w #$0006", "CPY.w #$0004", count=2)
-        engine.replace("LDY.w #$0005", "LDY.w #$0003", count=1)
-        engine.delete("LDA.b $0C", ";---")  # cut slot-5/6 writes (12 bytes)
-        engine.insert_after(
-            "STA.l $7F11FD,X",
-            notes(
-                [
-                    "",
-                    "; [ENG-FS] The 4 real name slots are copied above; drop"
-                    " the",
-                    "; 2 unused slots of the 6-wide US [NAME] field (DEX DEX)"
-                    " so",
-                    "; the trim rewinds to the real width. The db is NOP "
-                    "($EA)",
-                    "; fill, keeping this routine the same length as stock US,"
-                    " in",
-                    "; place of the two cut copy writes, so nothing "
-                    "downstream",
-                    "; shifts.",
-                ]
+        def narrow_name_field(engine: Assembly) -> None:
+            engine.replace("CPY.w #$0006", "CPY.w #$0004", count=2)
+            engine.replace("LDY.w #$0005", "LDY.w #$0003", count=1)
+            # Replace the two slot-5/6 copy writes (12 bytes, from LDA.b $0C
+            # up to the ;--- divider) in place -- referencing the very bytes
+            # removed, so no separate insertion anchor is needed.
+            engine.splice(
+                "LDA.b $0C",
+                notes(
+                    [
+                        "",
+                        "; [ENG-FS] The 4 real name slots are copied",
+                        "; above; drop the 2 unused slots of the 6-wide",
+                        "; US [NAME] field (DEX DEX) so the trim rewinds",
+                        "; to the real width. The db is NOP ($EA) fill,",
+                        "; keeping this routine stock-US length in place",
+                        "; of the two cut copy writes, so nothing",
+                        "; downstream shifts.",
+                    ]
+                )
+                + instructions(["DEX", "DEX"])
+                + [data("db " + ", ".join(["$EA"] * 10))],
+                until=";---",
             )
-            + instructions(["DEX", "DEX"])
-            + [data("db $EA, $EA, $EA, $EA, $EA, $EA, $EA, $EA, $EA, $EA")],
-        )
-        engine.annotate(
-            "ADC.w #$0006",
-            "[ENG-FS] advance by the US 6-wide field; DEX DEX below "
-            "trims to 4",
-        )
-        engine.annotate(
-            "LDY.w #$0003",
-            "[ENG-FS] trim trailing spaces across the 4-char [NAME] field",
-        )
-        # (2) repoint RenderText_Choose2HighOr3's cursor prompts to the copies
+            engine.annotate(
+                "ADC.w #$0006",
+                "[ENG-FS] advance by the US 6-wide field; DEX DEX below "
+                "trims to 4",
+            )
+            engine.annotate(
+                "LDY.w #$0003",
+                "[ENG-FS] trim trailing spaces across the 4-char [NAME] field",
+            )
+
+        # Engine edits grouped by the routine each targets. (2) repoints
+        # RenderText_Choose2HighOr3's two cursor prompts to the copies
         # re-appended below.
-        engine.replace(
-            "dw $000B",
-            "dw $018B    ; [ENG-TEXT] was $000B -> Message_Choose2High_opt1",
-            count=1,
-        )
-        engine.replace(
-            "dw $000C",
-            "dw $018C    ; [ENG-TEXT] was $000C -> Message_Choose2High_opt2",
-            count=1,
-        )
+        engine_edits: dict[str, list[Edit]] = {
+            "ParseText_WritePlayerName": [narrow_name_field],
+            "RenderText_Choose2HighOr3": [
+                (
+                    "dw $000B",
+                    "dw $018B    ; [ENG-TEXT] was $000B ->"
+                    " Message_Choose2High_opt1",
+                    1,
+                ),
+                (
+                    "dw $000C",
+                    "dw $018C    ; [ENG-TEXT] was $000C ->"
+                    " Message_Choose2High_opt2",
+                    1,
+                ),
+            ],
+        }
+        engine.apply_edit_table(engine_edits)
         # (3) message IDs: drop US-only 000B/000C so IDs match JP, then
         # re-append those two Choose2High cursor prompts past JP's ID range
         # (395=$18B, 396=$18C), terminated by $FF (the marker
         # CreateMessagePointers scans for). The bytes ARE the US 000B/000C
         # blocks, pulled and relabelled -- not hand-transcribed.
-        opt1 = main.function("Message_000B")
+        opt1 = main.block("Message_000B")
         opt1.replace(
             "Message_000B:",
             "Message_Choose2High_opt1:  ; ID $018B (395), cursor line 2",
             1,
         )
-        opt2 = main.function("Message_000C")
+        opt2 = main.block("Message_000C")
         opt2.replace(
             "Message_000C:",
             "Message_Choose2High_opt2:  ; ID $018C (396), cursor line 3",
@@ -375,7 +386,7 @@ def credits_bank(jp: Rom, us: Rom, *, changes: bool) -> Relocation:
                 if name in us.label_names:
                     us_rows += [
                         line.arguments
-                        for line in us.function(name, comments=False).lines
+                        for line in us.block(name, comments=False).lines
                         if line.opcode == "dw"
                     ]
             spliced = 0
@@ -453,15 +464,14 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
     if changes:
         place(dbr_trampolines(entries), 0x2DE100)
     for us_name, en_name, long_return in bodies:
-        body = us.function(us_name, comments=False)
+        body = us.block(us_name, comments=False)
         if changes and long_return:
             body.return_long(restore_bank=True)  # PLB before RTL (DBR restore)
         if en_name != us_name:
             body.lines[0].label = en_name  # rename the routine label
         place(body, mirror(require_start(body)))
 
-    region = us.concat([*name_text])
-    if changes:
+    def duplicate_mirror_rows(region: Assembly) -> None:
         # US ItemMenuNameText_Mirror is 2 dw rows; the JP slot wants 4, so copy
         # the 2 rows once more (byte-for-byte, cascading the rest $20 forward).
         start = next(
@@ -484,10 +494,12 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
         for copy, src in zip(copies, rows, strict=True):
             copy.size = src.size
         region.lines[end:end] = copies
+
+    def restore_ability_jp_rows(region: Assembly) -> None:
         # Rows 10-11 of AbilityText keep the JP tile values (not US).
         jp_rows = [
             line.arguments
-            for line in jp.function("AbilityText", comments=False).lines
+            for line in jp.block("AbilityText", comments=False).lines
             if line.opcode == "dw"
         ]
         row = 0
@@ -502,9 +514,18 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
                 if row in (10, 11):
                     line.arguments = jp_rows[row]
                 row += 1
+
+    region = us.concat([*name_text])
+    if changes:
+        region.apply_edit_table(
+            {
+                "ItemMenuNameText_Mirror": [duplicate_mirror_rows],
+                "AbilityText": [restore_ability_jp_rows],
+            }
+        )
     place(region, mirror(require_start(region)))
 
-    cursor = us.function("MenuCursorPositions", comments=False)
+    cursor = us.block("MenuCursorPositions", comments=False)
     # Cursor positions follow the Mirror table, which grew by $20 (2 rows).
     place(cursor, mirror(require_start(cursor)) + (0x20 if changes else 0))
     return relocation
@@ -544,12 +565,10 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
             "IntroLogoTilemap",
         }
     )
-    # Two helpers the US source marks with scope-transparent # labels (not
-    # top-level blocks); emitted verbatim with a real label.
+    # IRQActiveHandler is English-only: the US .not_mode7 handler loads a fixed
+    # #$80 raster split, whereas this checks $0128 for the name-entry screen
+    # and picks #$74/#$38. No US source to pull, so it is emitted verbatim.
     custom = {
-        "Intro_SetStripesAndAdvance": (
-            "Intro_SetStripesAndAdvance:\nSTA.b $14\nINC.b $11\nRTS"
-        ),
         "IRQActiveHandler": (
             "; [ENG-FS] V-IRQ active handler (name-entry raster split)."
             " bank_00's inline block JMLs here\n"
@@ -572,46 +591,17 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
             "LDA.b #$A1\n"
             "STA.w NMITIMEN\n"
             "JML $00821B"
-        ),
-    }
-    # Byte-neutral operand swaps: block -> [(old, new, count)].
-    simple_edits: dict[str, list[tuple[str, str, int]]] = {
-        "FileSelect_HandleInput": [("LDA.l $7003E5,X", "LDA.l $7003E1,X", 1)],
-        "CopyFile_SelectionAndBlinker": [("LDA.w #$0006", "LDA.w #$0004", 1)],
-        "CopyFile_TargetSelectionAndBlink": [
-            ("LDA.w #$0006", "LDA.w #$0004", 1)
-        ],
-        "FileSelect_CopyNameToStripes": [("LDA.w #$0006", "LDA.w #$0004", 1)],
-        "FileSelect_DrawDeaths": [("LDA.l $700405,X", "LDA.l $700401,X", 1)],
-        "NameFile_DoTheNaming": [
-            ("LDA.b #$05", "LDA.b #$03", 1),
-            ("CMP.b #$06", "CMP.b #$04", 1),
-            ("CMP.w #$000A", "CMP.w #$0006", 1),
-        ],
-        "NamePlayerTilemap": [
-            ("dw $6311, $1840", "dw $6311, $1040", 1),
-            ("dw $8311, $1840", "dw $8311, $1040", 1),
-            ("dw $A311, $1840", "dw $A311, $1040", 1),
-            ("dw $4211, $1D00", "dw $4211, $1500", 1),
-            ("dw $7011, $0580", "dw $6C11, $0580", 1),
-        ],
-        "ReinitializeFileSelectGraphics": [
-            (
-                "JSL PaletteLoadForFileSelect",
-                "JSL USFS_PaletteLoadForFileSelect",
-                1,
-            )
-        ],
+        )
     }
 
     def edit_initialize_gfx(block: Assembly) -> None:
         # JP FileSelect_InitializeGFX -> English (name-banner + BG3 setup).
-        block.delete("STZ.w $0AB6", "JSL PaletteLoad_UnderworldSet")
+        block.delete("STZ.w $0AB6", until="JSL PaletteLoad_UnderworldSet")
         block.insert_after(
             "STA.w $0AA9",
             instructions(["LDA.b #$06", "STA.w $0AB6", "STA.w $0710"]),
         )
-        block.delete("LDA.b #$01", "STA.w $0AB2")
+        block.delete("LDA.b #$01", until="STA.w $0AB2")
         block.insert_after(
             "JSL PaletteLoad_OWBG3", instructions(["LDA.b #$00"])
         )
@@ -621,7 +611,7 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
 
     def edit_erase(block: Assembly) -> None:
         # JP NameFile_EraseSave -> English (4-char blank fill + flags).
-        block.delete("STZ.w $0B10", "STZ.w $0B15")
+        block.delete("STZ.w $0B10", until="STZ.w $0B15")
         block.insert_after("STA.w $0128", instructions(["STZ.w $0B10"]))
         block.replace("LDA.b #$3E", "LDA.b #$83", count=1)
         block.replace("LDA.w #$019C", "LDA.w #$01F0", count=1)
@@ -641,43 +631,71 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
         msg = "NamePlayerTilemap: wide name row not found"
         raise ValueError(msg)
 
-    complex_edits = {
-        "FileSelect_InitializeGFX": edit_initialize_gfx,
-        "NameFile_EraseSave": edit_erase,
-        "NamePlayerTilemap": edit_name_player_tilemap,
+    # Each block beside its byte-neutral edits: a (old, new, count) replace, or
+    # a callable for the multi-step surgery above.
+    edits: dict[str, list[Edit]] = {
+        "FileSelect_HandleInput": [("LDA.l $7003E5,X", "LDA.l $7003E1,X", 1)],
+        "CopyFile_SelectionAndBlinker": [("LDA.w #$0006", "LDA.w #$0004", 1)],
+        "CopyFile_TargetSelectionAndBlink": [
+            ("LDA.w #$0006", "LDA.w #$0004", 1)
+        ],
+        "FileSelect_CopyNameToStripes": [("LDA.w #$0006", "LDA.w #$0004", 1)],
+        "FileSelect_DrawDeaths": [("LDA.l $700405,X", "LDA.l $700401,X", 1)],
+        "NameFile_DoTheNaming": [
+            ("LDA.b #$05", "LDA.b #$03", 1),
+            ("CMP.b #$06", "CMP.b #$04", 1),
+            ("CMP.w #$000A", "CMP.w #$0006", 1),
+        ],
+        "NamePlayerTilemap": [
+            ("dw $6311, $1840", "dw $6311, $1040", 1),
+            ("dw $8311, $1840", "dw $8311, $1040", 1),
+            ("dw $A311, $1840", "dw $A311, $1040", 1),
+            ("dw $4211, $1D00", "dw $4211, $1500", 1),
+            ("dw $7011, $0580", "dw $6C11, $0580", 1),
+            edit_name_player_tilemap,
+        ],
+        "ReinitializeFileSelectGraphics": [
+            (
+                "JSL PaletteLoadForFileSelect",
+                "JSL USFS_PaletteLoadForFileSelect",
+                1,
+            )
+        ],
+        "FileSelect_InitializeGFX": [edit_initialize_gfx],
+        "NameFile_EraseSave": [edit_erase],
     }
 
-    # Emitted in US source order: absolute addresses do not matter (symbolic
-    # references), and source order keeps the few fall-through routines next to
-    # their successor. The label-less helpers have no symbol to recurse to.
+    # This subsystem is PACKED contiguously at $2C8000, not mirror-placed (two
+    # JP save-backup routines are too big to mirror). Packing reassigns
+    # absolute addresses, so blocks are emitted in US source order to keep the
+    # few fall-through routines beside their successor.
+    # Intro_SetStripesAndAdvance is a US #-label the single-unit closure cannot
+    # reach, so it is named explicitly and pulled from US like the rest.
     reachable = us.closure(sorted(hooks), recursive=True)
-    block_order = list(
+    packed_blocks = list(
         dict.fromkeys(
             entry.name for entry in reachable if isinstance(entry, Block)
         )
     )
     if changes:
-        block_order += list(custom)
+        packed_blocks += ["Intro_SetStripesAndAdvance", *custom]
 
     lines = []
-    for name in block_order:
+    for name in packed_blocks:
         # One block: CUSTOM text verbatim, else US/JP (pool before routine)
-        # with its byte-neutral simple/complex edits applied.
+        # with its byte-neutral edits from the table above applied.
         if name in custom:
             block = Assembly.from_content(custom[name].split("\n"))
-            lines += block.function(name, comments=False).lines
+            lines += block.block(name, comments=False).lines
             continue
         source = jp if name in jp_blocks else us
         seg_lines = []
         if name in source.pool_names:
             seg_lines += source.pool(name, comments=False).lines
-        seg_lines += source.function(name, comments=False).lines
+        seg_lines += source.block(name, comments=False).lines
         segment = Assembly(seg_lines)
         if changes:
-            for old, new, count in simple_edits.get(name, []):
-                segment.replace(old, new, count)
-            if name in complex_edits:
-                complex_edits[name](segment)
+            segment.apply_edits(edits.get(name, []))
         lines += segment.lines
     # The entry points are the hooks; the whole recursive closure is what
     # relocates, so the one same-bank caller (a BRL inside FileSelect_
