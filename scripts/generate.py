@@ -783,6 +783,13 @@ def file_select_palette() -> Relocation:
     overlays those four US palettes (US-ROM ``PaletteData`` slices,
     ``incbin``\\ 'd from ``english/usfs_pal.bin``). ``file_select`` repoints
     the one ``JSL`` at it.
+
+    NOTE on row 5: statically it looks unneeded -- the file-select drives
+    ``PaletteLoad_UnderworldSet`` with ``$0AB6 = #$06`` (dungeon set $06, which
+    is byte-identical US<->JP), and the overlaid slice ($1BD9AA) is in set $03.
+    But dropping it was tested and turned the wooden file-select borders the
+    wrong colour, so the runtime CGRAM ends up needing it after all -- the load
+    path is more involved than the static read suggests. Keep all four rows.
     """
     relocation = Relocation()
     relocation.place(

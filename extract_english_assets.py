@@ -108,6 +108,8 @@ def main():
     #    is the wood name-banner); rows 9/11 hold identical ROM bytes JP<->US but the ported US
     #    file-select indexes a different palette there. (Offsets are PaletteData entries in bank
     #    $1B: $1BD9AA, PaletteData_owanim_00 $1BE604, PaletteData $1BD218, $1BD254.)
+    #    (Row 5 looks static-unneeded -- set $06 is identical US<->JP and $1BD9AA is in set $03 --
+    #    but removing it was tested and mis-coloured the wooden borders, so it is load-bearing.)
     ok &= write_asset("usfs_pal.bin",
                       us[0xDD9AA:0xDD9AA + 14] + us[0xDE604:0xDE604 + 14] +
                       us[0xDD218:0xDD218 + 14] + us[0xDD254:0xDD254 + 14])
