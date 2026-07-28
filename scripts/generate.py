@@ -565,34 +565,43 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
             "IntroLogoTilemap",
         }
     )
-    # IRQActiveHandler is English-only: the US .not_mode7 handler loads a fixed
-    # #$80 raster split, whereas this checks $0128 for the name-entry screen
-    # and picks #$74/#$38. No US source to pull, so it is emitted verbatim.
-    custom = {
-        "IRQActiveHandler": (
-            "; [ENG-FS] V-IRQ active handler (name-entry raster split)."
-            " bank_00's inline block JMLs here\n"
-            "; (see apply_base_edits in generate.py) and we JML back to"
-            " $00821B. $0128: $01=name-entry, $FF=transition.\n"
-            "IRQActiveHandler:\n"
-            "LDA.w TIMEUP\n"
-            "LDA.w $0128\n"
-            "CMP.b #$01\n"
-            "BNE .default_split\n"
-            "LDA.b #$74\n"
-            "BRA .store_split\n"
-            ".default_split\n"
-            "LDA.b #$38\n"
-            ".store_split\n"
-            "STA.w VTIMEL\n"
-            "STZ.w VTIMEH\n"
-            "STZ.w HTIMEL\n"
-            "STZ.w HTIMEH\n"
-            "LDA.b #$A1\n"
-            "STA.w NMITIMEN\n"
-            "JML $00821B"
+
+    def build_irq_handler() -> Assembly:
+        # The name-entry V-IRQ raster split, derived from JP
+        # NoIRQThread's .not_mode7 sublabel: bank_00 keeps the IRQ-active check
+        # (LDA $0128 / BEQ .IRQ_inactive) and JMLs here for the split (see
+        # apply_base_edits); we JML back to .IRQ_inactive ($00821B). JP already
+        # loads the #$38 split; we only add the name-entry ($0128 == $01) case
+        # that loads #$74 instead, reusing JP's #$38 as the default.
+        irq = jp.block("NoIRQThread").subblock(".not_mode7")
+        # bank_00 keeps the active-check; replace it with our entry label.
+        irq.splice(
+            ".not_mode7",
+            [
+                "; [ENG-FS] Name-entry V-IRQ raster split (JP",
+                "; NoIRQThread.not_mode7 + the $0128 name-entry case).",
+                "IRQActiveHandler:",
+            ],
+            until="LDA.w TIMEUP",
         )
-    }
+        irq.insert_before(
+            "LDA.b #$38",
+            [
+                *instructions(
+                    [
+                        "LDA.w $0128",
+                        "CMP.b #$01",
+                        "BNE .default_split",
+                        "LDA.b #$74",
+                        "BRA .store_split",
+                    ]
+                ),
+                ".default_split",
+            ],
+        )
+        irq.insert_after("LDA.b #$38", [".store_split"])
+        irq.append(instructions(["JML $00821B"]))
+        return irq
 
     def edit_initialize_gfx(block: Assembly) -> None:
         # JP FileSelect_InitializeGFX -> English (name-banner + BG3 setup).
@@ -678,16 +687,12 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
         )
     )
     if changes:
-        packed_blocks += ["Intro_SetStripesAndAdvance", *custom]
+        packed_blocks += ["Intro_SetStripesAndAdvance"]
 
     lines = []
     for name in packed_blocks:
-        # One block: CUSTOM text verbatim, else US/JP (pool before routine)
-        # with its byte-neutral edits from the table above applied.
-        if name in custom:
-            block = Assembly.from_content(custom[name].split("\n"))
-            lines += block.block(name, comments=False).lines
-            continue
+        # US/JP block (pool before routine) with its byte-neutral edits from
+        # the table above applied.
         source = jp if name in jp_blocks else us
         seg_lines = []
         if name in source.pool_names:
@@ -697,6 +702,8 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
         if changes:
             segment.apply_edits(edits.get(name, []))
         lines += segment.lines
+    if changes:  # the IRQ handler has no US/JP label -- built from a range
+        lines += build_irq_handler().lines
     # The entry points are the hooks; the whole recursive closure is what
     # relocates, so the one same-bank caller (a BRL inside FileSelect_
     # HandleInput, itself relocated) moves along -> every hook is an alias.
