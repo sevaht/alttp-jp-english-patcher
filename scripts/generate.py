@@ -65,49 +65,45 @@ def _redirect(bank: str, file: str) -> tuple[str, ...]:
     )
 
 
+# The VWF font blob's labels, shared by the text engine and the bank_00 upload;
+# left un-namespaced so both reach the same ``TheFont``.
+THEFONT_LABELS = frozenset({"TheFont", "TheFont_end"})
+
+
 def text(us: Rom, *, changes: bool) -> Relocation:
     """The US text subsystem: the VWF font (bank ``$20``), the message engine
     (mirror-placed to ``$2E``), and the message data (``$22``/``$23``).
 
-    The engine is pulled whole from ``ENGINE_ROOTS`` by reference; the two
-    endpoints plus ``TextCommandLengths`` (reached only by an out-of-bounds
-    index) close over the entire live subsystem. Dead blocks drop out, their
-    space held with an ``org`` so survivors keep their +$200000 mirror address.
+    The engine is pulled whole by reference: the two endpoints plus
+    ``TextCommandLengths`` (reached only by an out-of-bounds index) close over
+    the entire live subsystem. Dead blocks drop out, their space held with an
+    ``org`` so survivors keep their +$200000 mirror address.
     """
-    engine_roots = (
-        "RenderText",
-        "CreateMessagePointers",
-        "TextCommandLengths",
+    engine = us.extract(
+        ("RenderText", "CreateMessagePointers", "TextCommandLengths"),
+        recursive=True,
+        external=THEFONT_LABELS,
+        comments=True,
+        gap_notes={
+            "UNREACHABLE_0ED3CF": (
+                "CreateMessagePointers over-reads "
+                "RenderText_MoreInitialSettings,Y up to index $7F (past its "
+                "20-byte end) across this pad into TextCommandLengths just "
+                "below, so this offset is load-bearing."
+            )
+        },
     )
-    # Every JP name this subsystem intercepts (freed in the base). The first
-    # three claim a bare alias in the relocated engine; the last two are the
-    # override stubs below (placed verbatim, already carrying a bare alias).
-    # None have a same-bank caller, so all resolve to aliases (no pad).
-    engine_hooks = (
-        "RenderText",
-        "Module0E_02_RenderText",
-        "CreateMessagePointers",
-        "DecompressFontGFX",
-        "BuildSomeTextMasks",
-    )
-    shared = frozenset({"TheFont", "TheFont_end"})  # left un-namespaced
-    gap_notes = {
-        "UNREACHABLE_0ED3CF": (
-            "CreateMessagePointers over-reads "
-            "RenderText_MoreInitialSettings,Y up to index $7F (past its "
-            "20-byte end) across this pad into TextCommandLengths just "
-            "below, so this offset is load-bearing."
-        )
-    }
+    main = us.blocks_until("Message_Data")
+    overflow = us.blocks_until("Message_DataExtra")
     decompress_hook = 0x0EF572  # JP DecompressFontGFX
     masks_hook = 0x0EFCB2  # JP BuildSomeTextMasks
 
-    def edit_engine(engine: Assembly) -> None:
+    if changes:
         # (1) [NAME] field: JP names are 4 chars, the stock US handler 6 wide.
-        # Read/filter only 4, copy the 4 real slots (below), then drop the 2
-        # unused field slots (DEX DEX) and trim. The two slot-5/6 copy writes
-        # become DEX DEX + NOP ($EA) fill of the SAME 12 bytes, so the routine
-        # stays byte-identical to stock US -- nothing downstream shifts.
+        # Read/filter only 4, copy the 4 real slots, then drop the 2 unused
+        # field slots (DEX DEX) and trim. The two slot-5/6 copy writes become
+        # DEX DEX + NOP ($EA) fill of the SAME 12 bytes, so the routine stays
+        # byte-identical to stock US -- nothing downstream shifts.
         engine.replace("CPY.w #$0006", "CPY.w #$0004", count=2)
         engine.replace("LDY.w #$0005", "LDY.w #$0003", count=1)
         engine.delete("LDA.b $0C", ";---")  # cut slot-5/6 writes (12 bytes)
@@ -141,8 +137,8 @@ def text(us: Rom, *, changes: bool) -> Relocation:
             "LDY.w #$0003",
             "[ENG-FS] trim trailing spaces across the 4-char [NAME] field",
         )
-        # (2) repoint RenderText_Choose2HighOr3's cursor prompts to the
-        # re-appended copies
+        # (2) repoint RenderText_Choose2HighOr3's cursor prompts to the copies
+        # re-appended below.
         engine.replace(
             "dw $000B",
             "dw $018B    ; [ENG-TEXT] was $000B -> Message_Choose2High_opt1",
@@ -153,92 +149,88 @@ def text(us: Rom, *, changes: bool) -> Relocation:
             "dw $018C    ; [ENG-TEXT] was $000C -> Message_Choose2High_opt2",
             count=1,
         )
-
-    def cursor_messages() -> list[Line]:
-        # The two Choose2High cursor prompts, re-appended past JP's ID range,
-        # terminated by $FF (the marker CreateMessagePointers scans for).
-        rule = ";" + "=" * 99
-        return [
-            *notes(
+        # (3) message IDs: drop US-only 000B/000C so IDs match JP, then
+        # re-append those two Choose2High cursor prompts past JP's ID range
+        # (395=$18B, 396=$18C), terminated by $FF (the marker
+        # CreateMessagePointers scans for). The bytes ARE the US 000B/000C
+        # blocks, pulled and relabelled -- not hand-transcribed.
+        opt1 = main.function("Message_000B")
+        opt1.replace(
+            "Message_000B:",
+            "Message_Choose2High_opt1:  ; ID $018B (395), cursor line 2",
+            1,
+        )
+        opt2 = main.function("Message_000C")
+        opt2.replace(
+            "Message_000C:",
+            "Message_Choose2High_opt2:  ; ID $018C (396), cursor line 3",
+            1,
+        )
+        main.delete_block("Message_000B")
+        main.delete_block("Message_000C")
+        overflow.append(
+            notes(
                 [
-                    rule,
-                    "; [ENG-TEXT] Restored Choose2High cursor-prompt messages"
-                    " (US",
-                    "; Message_000B/000C). The ID realignment drops US-only",
-                    "; 000B/000C so message IDs match JP, but the US engine's",
-                    "; RenderText_Choose2HighOr3 references them by ID for "
-                    "the",
-                    "; selection cursor. Re-appended at the next free IDs",
-                    "; (395=$18B, 396=$18C, past JP's 0-394). Without this, a",
-                    "; 2-option 'high' prompt (e.g. the Great Fairy upgrade)",
-                    "; loaded whatever now sits at ID $000B as glitch text.",
-                    "; ID $018B (395) -- cursor '>' on line 2",
-                    "Message_Choose2High_opt1:",
+                    ";" + "=" * 99,
+                    "; [ENG-TEXT] Restored Choose2High cursor-prompt",
+                    "; messages (US Message_000B/000C). The ID realign drops",
+                    "; US-only 000B/000C so message IDs match JP, but the US",
+                    "; engine's RenderText_Choose2HighOr3 references them by",
+                    "; ID for the selection cursor. Re-appended at the next",
+                    "; free IDs (past JP's 0-394). Without this a 2-option",
+                    "; 'high' prompt (e.g. the Great Fairy upgrade) loaded",
+                    "; whatever now sits at ID $000B as glitch text.",
                 ]
-            ),
-            *datas(
-                [
-                    "db $7A, $00 ; set draw speed",
-                    "db $76 ; line 3",
-                    "db $88 ; [    ]",
-                    "db $75 ; line 2",
-                    "db $8A, $44 ; [  ]>",
-                    "db $6F ; choose 2 high",
-                    "db $7F ; end of message",
-                ]
-            ),
-            *notes(
-                [
-                    "",
-                    "Message_Choose2High_opt2:            ; ID $018C (396) -- "
-                    "cursor '>' on line 3",
-                ]
-            ),
-            *datas(
-                [
-                    "db $7A, $00 ; set draw speed",
-                    "db $75 ; line 2",
-                    "db $88 ; [    ]",
-                    "db $76 ; line 3",
-                    "db $8A, $44 ; [  ]>",
-                    "db $6F ; choose 2 high",
-                    "db $7F ; end of message",
-                ]
-            ),
-            *notes([""]),
-            *datas(
+            )
+            + opt1.lines
+            + notes([""])
+            + opt2.lines
+            + notes([""])
+            + datas(
                 [
                     "db $FF ; end of message table "
                     "(CreateMessagePointers terminator)"
                 ]
-            ),
-        ]
+            )
+        )
 
-    engine = us.extract(
-        engine_roots,
-        recursive=True,
-        external=shared,
-        comments=True,
-        gap_notes=gap_notes,
-    )
-    if changes:
-        edit_engine(engine)
     engine_org = mirror(require_start(engine))  # $0EC440 -> $2EC440
-
-    main = us.blocks_until("Message_Data")
-    overflow = us.blocks_until("Message_DataExtra")
-    if changes:
-        main.delete_block("Message_000B")  # drop US-only cursor messages,
-        main.delete_block("Message_000C")  # so game-code message IDs match JP
-        overflow.append(cursor_messages())  # re-appended past JP's ID range
-
-    # The engine re-caption is a multi-line comment swap, done on the engine's
-    # rendered text (placed as a str). One global EN_ namespace keeps
-    # cross-block
-    # refs (engine <-> data) in step; the bare hook aliases and override stubs
-    # are graft-only, so a baseline build emits neither.
     engine_text = engine.render(engine_org)
+    overflow_note = "MESSAGE overflow (US bank_0E)" + (
+        " + re-appended cursor prompts." if changes else "."
+    )
+
+    # Every JP name this subsystem intercepts (freed in the base): the first
+    # three claim a bare alias in the relocated engine; the last two are the
+    # override stubs below (verbatim, already carrying a bare alias). None have
+    # a same-bank caller, so all resolve to aliases (no pad).
+    relocation = Relocation(
+        hooked=(
+            "RenderText",
+            "Module0E_02_RenderText",
+            "CreateMessagePointers",
+            "DecompressFontGFX",
+            "BuildSomeTextMasks",
+        ),
+        shared=THEFONT_LABELS,
+        changes=changes,
+    )
+    # Our VWF text font (font.2bpp); a raw blob (TheFont/TheFont_end stay bare,
+    # shared), read by the engine and the bank_00 upload.
+    relocation.place(
+        'TheFont:\n    incbin "english/font.2bpp"\nTheFont_end:',
+        0x208000,
+        "Our VWF text font (font.2bpp); read by the bank_00 upload.",
+        namespace=False,
+    )
+    relocation.place(
+        main, 0x228000, "MESSAGE data (US text.asm bank $1C); free bank."
+    )
+    relocation.place(overflow, 0x238000, overflow_note)
     if changes:
+        # Re-caption the name filter (a multi-line comment swap on the rendered
+        # engine text), then the two override stubs -- hand-written in final
+        # form (own bare hook alias + EN_ name), emitted verbatim.
         engine_text = substitute(
             engine_text,
             "; I hate this thing...",
@@ -254,29 +246,6 @@ def text(us: Rom, *, changes: bool) -> Relocation:
                 ]
             ),
         )
-
-    overflow_note = "MESSAGE overflow (US bank_0E)"
-    overflow_note += " + re-appended cursor prompts." if changes else "."
-
-    relocation = Relocation(
-        hooked=engine_hooks, shared=shared, changes=changes
-    )
-    # Our VWF text font (font.2bpp); a raw blob (TheFont/TheFont_end stay bare,
-    # shared), read by the engine and the bank_00 upload.
-    relocation.place(
-        'TheFont:\n    incbin "english/font.2bpp"\nTheFont_end:',
-        0x208000,
-        "Our VWF text font (font.2bpp); read by the bank_00 upload.",
-        namespace=False,
-    )
-    relocation.place(
-        engine_text,
-        engine_org,
-        "Text ENGINE, mirror-placed from US bank_0E $0EC440.",
-    )
-    if changes:
-        # Override stubs, hand-written in final form (own bare hook alias +
-        # EN_ name), so emitted verbatim.
         relocation.place(
             "; [ENG-FSFONT] JP's DecompressFontGFX VWF-rendered the JP font"
             " into $7E2000; the US ROM has no\n"
@@ -303,9 +272,10 @@ def text(us: Rom, *, changes: bool) -> Relocation:
             namespace=False,
         )
     relocation.place(
-        main, 0x228000, "MESSAGE data (US text.asm bank $1C); free bank."
+        engine_text,
+        engine_org,
+        "Text ENGINE, mirror-placed from US bank_0E $0EC440.",
     )
-    relocation.place(overflow, 0x238000, overflow_note)
     return relocation
 
 
@@ -314,8 +284,7 @@ def font_upload(jp: Rom, *, changes: bool) -> Relocation:
     upload our plain-2bpp ``TheFont`` to VRAM $E000 (was a $7E2000 VWF buffer).
     """
     root = "TransferFontToVRAM"
-    shared = frozenset({"TheFont", "TheFont_end"})
-    routine = jp.extract([root], recursive=True, external=shared)
+    routine = jp.extract([root], recursive=True, external=THEFONT_LABELS)
     if changes:
         # The three font-source operands, same byte width so length is
         # unchanged.
@@ -331,7 +300,9 @@ def font_upload(jp: Rom, *, changes: bool) -> Relocation:
                 " US form (JP uploaded a $7E2000 VWF buffer)."
             ),
         )
-    relocation = Relocation(hooked=(root,), shared=shared, changes=changes)
+    relocation = Relocation(
+        hooked=(root,), shared=THEFONT_LABELS, changes=changes
+    )
     relocation.place_mirror(
         routine, "bank-$00 TransferFontToVRAM (mirror of JP $00E596)."
     )
@@ -375,36 +346,6 @@ def credits_bank(jp: Rom, us: Rom, *, changes: bool) -> Relocation:
     )
     readers = ("Credits_AddNextAttribution", "Credits_AddEndingSequenceText")
 
-    def us_glyph_values(names: tuple[str, ...]) -> list[list[str]]:
-        # The dw operand lists of the named US blocks/pools, in order (pool
-        # data before block, matching Assembly.concat).
-        values: list[list[str]] = []
-        for name in names:
-            segments = []
-            if name in us.pool_names:
-                segments.append(us.pool(name, comments=False))
-            if name in us.label_names:
-                segments.append(us.function(name, comments=False))
-            for segment in segments:
-                values += [
-                    line.arguments
-                    for line in segment.lines
-                    if line.opcode == "dw"
-                ]
-        return values
-
-    def splice_us_glyphs(group: Assembly, values: list[list[str]]) -> None:
-        # Overwrite the group's leading dw values with the US glyph tiles (same
-        # length in JP and US, so byte-neutral); JP text data below is kept.
-        index = 0
-        for line in group.lines:
-            if line.opcode == "dw" and index < len(values):
-                line.arguments = values[index]
-                index += 1
-        if index != len(values):
-            msg = f"glyph splice: wrote {index} of {len(values)} entries"
-            raise ValueError(msg)
-
     # The two readers are the hooks; they are reached across banks by a
     # same-bank caller in bank_0E's credits driver (which does NOT relocate),
     # so caller-analysis will give each a landing pad in bank_0E's freed ROM.
@@ -420,7 +361,31 @@ def credits_bank(jp: Rom, us: Rom, *, changes: bool) -> Relocation:
     for blocks, glyph_blocks in groups:
         group = jp.concat(list(blocks))
         if changes:
-            splice_us_glyphs(group, us_glyph_values(glyph_blocks))
+            # Splice the US glyph-tile dw rows over the group's leading dw
+            # values (pool data before block, matching concat; same length
+            # JP<->US, so byte-neutral -- the JP text data below is kept).
+            us_rows: list[list[str]] = []
+            for name in glyph_blocks:
+                if name in us.pool_names:
+                    us_rows += [
+                        line.arguments
+                        for line in us.pool(name, comments=False).lines
+                        if line.opcode == "dw"
+                    ]
+                if name in us.label_names:
+                    us_rows += [
+                        line.arguments
+                        for line in us.function(name, comments=False).lines
+                        if line.opcode == "dw"
+                    ]
+            spliced = 0
+            for line in group.lines:
+                if line.opcode == "dw" and spliced < len(us_rows):
+                    line.arguments = us_rows[spliced]
+                    spliced += 1
+            if spliced != len(us_rows):
+                msg = f"glyph splice: wrote {spliced} of {len(us_rows)}"
+                raise ValueError(msg)
             if any(block.name in readers for block in blocks):
                 group.return_long()
         start = require_start(group)
@@ -467,50 +432,6 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
         "AbilityText",
     )
 
-    def duplicate_mirror(region: Assembly) -> None:
-        # US ItemMenuNameText_Mirror is 2 dw rows; the JP slot wants 4, so copy
-        # the 2 rows once more (byte-for-byte, cascading the rest $20 forward).
-        start = next(
-            index
-            for index, line in enumerate(region.lines)
-            if line.label and line.label.endswith("ItemMenuNameText_Mirror")
-        )
-        end = next(
-            index
-            for index in range(start + 1, len(region.lines))
-            if region.lines[index].is_top_level_label
-        )
-        rows = [
-            line for line in region.lines[start:end] if line.opcode == "dw"
-        ]
-        if len(rows) != 2:  # noqa: PLR2004
-            msg = f"Mirror: expected 2 US rows, found {len(rows)}"
-            raise ValueError(msg)
-        copies = [Line.from_line(str(row)) for row in rows]
-        for copy, row in zip(copies, rows, strict=True):
-            copy.size = row.size
-        region.lines[end:end] = copies
-
-    def patch_ability_text(region: Assembly) -> None:
-        # Rows 10-11 of AbilityText keep the JP tile values (not US).
-        jp_rows = [
-            line.arguments
-            for line in jp.function("AbilityText", comments=False).lines
-            if line.opcode == "dw"
-        ]
-        row = 0
-        inside = False
-        for line in region.lines:
-            if line.label and line.label.endswith("AbilityText"):
-                inside = True
-                continue
-            if inside and line.is_top_level_label:
-                break
-            if inside and line.opcode == "dw":
-                if row in (10, 11):
-                    line.arguments = jp_rows[row]
-                row += 1
-
     # The four entries are the hooks. Their same-bank JSR callers (the item-
     # menu dispatch) stay in bank_0D, so caller-analysis gives each a landing
     # pad in bank_0D's freed ROM (the bare name -> a DBR trampoline here). The
@@ -541,13 +462,51 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
 
     region = us.concat([*name_text])
     if changes:
-        duplicate_mirror(region)
-        patch_ability_text(region)
+        # US ItemMenuNameText_Mirror is 2 dw rows; the JP slot wants 4, so copy
+        # the 2 rows once more (byte-for-byte, cascading the rest $20 forward).
+        start = next(
+            index
+            for index, line in enumerate(region.lines)
+            if line.label and line.label.endswith("ItemMenuNameText_Mirror")
+        )
+        end = next(
+            index
+            for index in range(start + 1, len(region.lines))
+            if region.lines[index].is_top_level_label
+        )
+        rows = [
+            line for line in region.lines[start:end] if line.opcode == "dw"
+        ]
+        if len(rows) != 2:  # noqa: PLR2004
+            msg = f"Mirror: expected 2 US rows, found {len(rows)}"
+            raise ValueError(msg)
+        copies = [Line.from_line(str(row)) for row in rows]
+        for copy, src in zip(copies, rows, strict=True):
+            copy.size = src.size
+        region.lines[end:end] = copies
+        # Rows 10-11 of AbilityText keep the JP tile values (not US).
+        jp_rows = [
+            line.arguments
+            for line in jp.function("AbilityText", comments=False).lines
+            if line.opcode == "dw"
+        ]
+        row = 0
+        inside = False
+        for line in region.lines:
+            if line.label and line.label.endswith("AbilityText"):
+                inside = True
+                continue
+            if inside and line.is_top_level_label:
+                break
+            if inside and line.opcode == "dw":
+                if row in (10, 11):
+                    line.arguments = jp_rows[row]
+                row += 1
     place(region, mirror(require_start(region)))
 
     cursor = us.function("MenuCursorPositions", comments=False)
-    shift = 0x20 if changes else 0  # Mirror grew by $20 (2 rows)
-    place(cursor, mirror(require_start(cursor)) + shift)
+    # Cursor positions follow the Mirror table, which grew by $20 (2 rows).
+    place(cursor, mirror(require_start(cursor)) + (0x20 if changes else 0))
     return relocation
 
 
@@ -688,25 +647,6 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
         "NamePlayerTilemap": edit_name_player_tilemap,
     }
 
-    def block_segment(name: str) -> Assembly:
-        # One block: CUSTOM text, or US/JP with edits (pool before routine).
-        if name in custom:
-            return Assembly.from_content(custom[name].split("\n")).function(
-                name, comments=False
-            )
-        source = jp if name in jp_blocks else us
-        lines = []
-        if name in source.pool_names:
-            lines += source.pool(name, comments=False).lines
-        lines += source.function(name, comments=False).lines
-        segment = Assembly(lines)
-        if changes:
-            for old, new, count in simple_edits.get(name, []):
-                segment.replace(old, new, count)
-            if name in complex_edits:
-                complex_edits[name](segment)
-        return segment
-
     # Emitted in US source order: absolute addresses do not matter (symbolic
     # references), and source order keeps the few fall-through routines next to
     # their successor. The label-less helpers have no symbol to recurse to.
@@ -721,7 +661,24 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
 
     lines = []
     for name in block_order:
-        lines += block_segment(name).lines
+        # One block: CUSTOM text verbatim, else US/JP (pool before routine)
+        # with its byte-neutral simple/complex edits applied.
+        if name in custom:
+            block = Assembly.from_content(custom[name].split("\n"))
+            lines += block.function(name, comments=False).lines
+            continue
+        source = jp if name in jp_blocks else us
+        seg_lines = []
+        if name in source.pool_names:
+            seg_lines += source.pool(name, comments=False).lines
+        seg_lines += source.function(name, comments=False).lines
+        segment = Assembly(seg_lines)
+        if changes:
+            for old, new, count in simple_edits.get(name, []):
+                segment.replace(old, new, count)
+            if name in complex_edits:
+                complex_edits[name](segment)
+        lines += segment.lines
     # The entry points are the hooks; the whole recursive closure is what
     # relocates, so the one same-bank caller (a BRL inside FileSelect_
     # HandleInput, itself relocated) moves along -> every hook is an alias.
