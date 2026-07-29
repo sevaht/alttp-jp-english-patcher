@@ -82,7 +82,9 @@ def _redirect(bank: str, file: str) -> tuple[str, ...]:
 THEFONT_LABELS = frozenset({"TheFont", "TheFont_end"})
 
 
-def text(sources: Sources, *, changes: bool) -> Relocation:
+def text(
+    sources: Sources, *, changes: bool, extended_names: bool
+) -> Relocation:
     """The US text subsystem: the VWF font (bank ``$20``), the message engine
     (mirror-placed to ``$2E``), and the message data (``$22``/``$23``).
 
@@ -112,50 +114,34 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
     masks_hook = jp.address_of("BuildSomeTextMasks")
 
     if changes:
-        # (1) [NAME] field: JP names are 4 chars, the stock US handler 6 wide.
-        # Read/filter only 4, copy the 4 real slots, then drop the 2 unused
-        # field slots (DEX DEX) and trim. The two slot-5/6 copy writes become
-        # DEX DEX + NOP ($EA) fill of the SAME 12 bytes, so the routine stays
-        # byte-identical to stock US -- nothing downstream shifts.
-        def narrow_name_field(engine: Assembly) -> None:
-            engine.replace("CPY.w #$0006", "CPY.w #$0004", count=2)
-            engine.replace("LDY.w #$0005", "LDY.w #$0003", count=1)
-            # Replace the two slot-5/6 copy writes (12 bytes, from LDA.b $0C
-            # up to the ;--- divider) in place -- referencing the very bytes
-            # removed, so no separate insertion anchor is needed.
-            engine.splice(
-                "LDA.b $0C",
-                notes(
+        # (1) [NAME] field: 6-char (extended) vs the legacy 4-char build.
+        if extended_names:
+            # The name is a 6-word field at $3D5 (widened -- see file_select),
+            # so the stock US 6-char handler works; just repoint its read.
+            name_field: list[Edit] = [
+                ("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)
+            ]
+        else:
+            # Narrow the US 6-char handler to JP's 4-char field at $3D9: read/
+            # filter/copy 4, then DEX DEX + $EA fill (byte-neutral) for slots
+            # 5-6.
+            def narrow_to_four(engine: Assembly) -> None:
+                engine.replace("CPY.w #$0006", "CPY.w #$0004", count=2)
+                engine.replace("LDY.w #$0005", "LDY.w #$0003", count=1)
+                engine.splice(
+                    "LDA.b $0C",
                     [
-                        "",
-                        "; [ENG-FS] The 4 real name slots are copied",
-                        "; above; drop the 2 unused slots of the 6-wide",
-                        "; US [NAME] field (DEX DEX) so the trim rewinds",
-                        "; to the real width. The db is NOP ($EA) fill,",
-                        "; keeping this routine stock-US length in place",
-                        "; of the two cut copy writes, so nothing",
-                        "; downstream shifts.",
-                    ]
+                        *instructions(["DEX", "DEX"]),
+                        data("db " + ", ".join(["$EA"] * 10)),
+                    ],
+                    until=";---",
                 )
-                + instructions(["DEX", "DEX"])
-                + [data("db " + ", ".join(["$EA"] * 10))],
-                until=";---",
-            )
-            engine.annotate(
-                "ADC.w #$0006",
-                "[ENG-FS] advance by the US 6-wide field; DEX DEX below "
-                "trims to 4",
-            )
-            engine.annotate(
-                "LDY.w #$0003",
-                "[ENG-FS] trim trailing spaces across the 4-char [NAME] field",
-            )
 
-        # Engine edits grouped by the routine each targets. (2) repoints
-        # RenderText_Choose2HighOr3's two cursor prompts to the copies
-        # re-appended below.
+            name_field = [narrow_to_four]
+        # (2) repoints RenderText_Choose2HighOr3's two cursor prompts to the
+        # copies re-appended below.
         engine_edits: dict[str, list[Edit]] = {
-            "ParseText_WritePlayerName": [narrow_name_field],
+            "ParseText_WritePlayerName": name_field,
             "RenderText_Choose2HighOr3": [
                 (
                     "dw $000B",
@@ -533,7 +519,9 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
     return relocation
 
 
-def file_select(sources: Sources, *, changes: bool) -> Relocation:
+def file_select(
+    sources: Sources, *, changes: bool, extended_names: bool
+) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry, packed
     contiguously from ``$2C8000`` (two JP-restored save routines are too big
     for
@@ -622,12 +610,19 @@ def file_select(sources: Sources, *, changes: bool) -> Relocation:
         )
 
     def edit_erase(block: Assembly) -> None:
-        # JP NameFile_EraseSave -> English (4-char blank fill + flags).
+        # JP NameFile_EraseSave -> English blank fill + flags.
         block.delete("STZ.w $0B10", until="STZ.w $0B15")
         block.insert_after("STA.w $0128", instructions(["STZ.w $0B10"]))
         block.replace("LDA.b #$3E", "LDA.b #$83", count=1)
         block.replace("LDA.w #$019C", "LDA.w #$01F0", count=1)
         block.replace("LDA.w #$018C", "LDA.w #$00A9", count=1)
+        if extended_names:
+            # widen: prepend two blank-writes so all 6 words ($3D5-$3DF) clear.
+            block.insert_before(
+                "STA.l $7003D9,X",
+                instructions(["STA.l $7003D5,X", "STA.l $7003D7,X"]),
+            )
+        # else JP's native four blank-writes at $3D9 match the 4-char field.
 
     def edit_name_player_tilemap(block: Assembly) -> None:
         # Narrow NamePlayerTilemap's 7-value name row to 3 (the 4-char name);
@@ -643,29 +638,47 @@ def file_select(sources: Sources, *, changes: bool) -> Relocation:
         msg = "NamePlayerTilemap: wide name row not found"
         raise ValueError(msg)
 
-    # Each block beside its byte-neutral edits: a (old, new, count) replace, or
-    # a callable for the multi-step surgery above.
+    # Player-name width fork. EXTENDED widens the SRAM name to a contiguous
+    # 6-word field at $3D5 (ending just before the JP checksum marker at $3E1),
+    # so the US 6-char-native routines just need their base repointed -4
+    # ($7003D9 -> $7003D5). LEGACY keeps JP's 4-word field at $3D9 and narrows
+    # the US routines to 4. Either way FileSelect_HandleInput/DrawDeaths touch
+    # only post-name data (SCHKSM $3E1, deaths $401), so they are unchanged.
+    if extended_names:
+        shift = ("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)
+        name_edits: dict[str, list[Edit]] = {
+            "CopyFile_SelectionAndBlinker": [shift],
+            "CopyFile_TargetSelectionAndBlink": [shift],
+            "FileSelect_CopyNameToStripes": [shift],
+            "NameFile_DrawSelectedCharacter": [shift],
+            # the char write + the terminator read -- both $7003D9,X.
+            "NameFile_DoTheNaming": [("$7003D9", "$7003D5", 2)],
+            # the special-name cheat check (name-word 1 -> mushroom + items).
+            "InitializeSaveFile": [("LDA.l $7003D9", "LDA.l $7003D5", 1)],
+        }
+    else:
+        narrow = ("LDA.w #$0006", "LDA.w #$0004", 1)
+        name_edits = {
+            "CopyFile_SelectionAndBlinker": [narrow],
+            "CopyFile_TargetSelectionAndBlink": [narrow],
+            "FileSelect_CopyNameToStripes": [narrow],
+            "NameFile_DoTheNaming": [
+                ("LDA.b #$05", "LDA.b #$03", 1),
+                ("CMP.b #$06", "CMP.b #$04", 1),
+                ("CMP.w #$000A", "CMP.w #$0006", 1),
+            ],
+            "NamePlayerTilemap": [
+                ("dw $6311, $1840", "dw $6311, $1040", 1),
+                ("dw $8311, $1840", "dw $8311, $1040", 1),
+                ("dw $A311, $1840", "dw $A311, $1040", 1),
+                ("dw $4211, $1D00", "dw $4211, $1500", 1),
+                ("dw $7011, $0580", "dw $6C11, $0580", 1),
+                edit_name_player_tilemap,
+            ],
+        }
     edits: dict[str, list[Edit]] = {
         "FileSelect_HandleInput": [("LDA.l $7003E5,X", "LDA.l $7003E1,X", 1)],
-        "CopyFile_SelectionAndBlinker": [("LDA.w #$0006", "LDA.w #$0004", 1)],
-        "CopyFile_TargetSelectionAndBlink": [
-            ("LDA.w #$0006", "LDA.w #$0004", 1)
-        ],
-        "FileSelect_CopyNameToStripes": [("LDA.w #$0006", "LDA.w #$0004", 1)],
         "FileSelect_DrawDeaths": [("LDA.l $700405,X", "LDA.l $700401,X", 1)],
-        "NameFile_DoTheNaming": [
-            ("LDA.b #$05", "LDA.b #$03", 1),
-            ("CMP.b #$06", "CMP.b #$04", 1),
-            ("CMP.w #$000A", "CMP.w #$0006", 1),
-        ],
-        "NamePlayerTilemap": [
-            ("dw $6311, $1840", "dw $6311, $1040", 1),
-            ("dw $8311, $1840", "dw $8311, $1040", 1),
-            ("dw $A311, $1840", "dw $A311, $1040", 1),
-            ("dw $4211, $1D00", "dw $4211, $1500", 1),
-            ("dw $7011, $0580", "dw $6C11, $0580", 1),
-            edit_name_player_tilemap,
-        ],
         "ReinitializeFileSelectGraphics": [
             (
                 "JSL PaletteLoadForFileSelect",
@@ -675,6 +688,7 @@ def file_select(sources: Sources, *, changes: bool) -> Relocation:
         ],
         "FileSelect_InitializeGFX": [edit_initialize_gfx],
         "NameFile_EraseSave": [edit_erase],
+        **name_edits,
     }
 
     # This subsystem is PACKED contiguously at $2C8000, not mirror-placed (two
@@ -1003,7 +1017,9 @@ def patch_main_asm(english: Rom) -> None:
     main.resize()
 
 
-def build(*, usdasm: Path, jpdasm: Path, changes: bool) -> Rom:
+def build(
+    *, usdasm: Path, jpdasm: Path, changes: bool, extended_names: bool = True
+) -> Rom:
     """Assemble the whole English program as one editable :class:`Rom`.
 
     Loads the pristine US and JP disassemblies as whole-program
@@ -1013,18 +1029,19 @@ def build(*, usdasm: Path, jpdasm: Path, changes: bool) -> Rom:
     into ``english``, the base banks are hooked to reach them (unless
     ``changes`` is off, the change-free baseline), and ``main.asm`` is wired.
     Writing it back out -- base banks hooked in place, graft banks beside them
-    -- is the caller's :meth:`Rom.write`.
+    -- is the caller's :meth:`Rom.write`. ``extended_names`` builds 6-character
+    player names (the default); ``False`` is the legacy 4-character build.
     """
     sources = Sources(
         us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
     )
     english = sources.jp.copy()
     relocations = [
-        text(sources, changes=changes),
+        text(sources, changes=changes, extended_names=extended_names),
         font_upload(sources, changes=changes),
         credits_bank(sources, changes=changes),
         item_menu(sources, changes=changes),
-        file_select(sources, changes=changes),
+        file_select(sources, changes=changes, extended_names=extended_names),
         graphics(changes=changes),
         file_select_palette(),
     ]
@@ -1047,6 +1064,11 @@ def main() -> None:
         action="store_true",
         help="emit the change-free baseline (no graft edits or base hooks)",
     )
+    parser.add_argument(
+        "--no-extended-names",
+        action="store_true",
+        help="legacy 4-character player names (default: 6-character names)",
+    )
     parser.add_argument("--usdasm", type=Path, default=USDASM)
     parser.add_argument("--jpdasm", type=Path, default=JPDASM)
     parser.add_argument(
@@ -1057,7 +1079,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     english = build(
-        usdasm=args.usdasm, jpdasm=args.jpdasm, changes=not args.baseline
+        usdasm=args.usdasm,
+        jpdasm=args.jpdasm,
+        changes=not args.baseline,
+        extended_names=not args.no_extended_names,
     )
     generated = english.write(args.out, bank_header=bank_header)
     mode = "baseline" if args.baseline else "with changes"

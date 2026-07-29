@@ -86,11 +86,16 @@ rm -f "$LOG"
 MD5=$(md5sum "$OUT" | cut -d' ' -f1)
 echo
 echo "SUCCESS -> $OUT  ($(stat -c%s "$OUT") bytes, md5 $MD5)"
-REFERENCE_MD5="57b5ccc203b7192020a1d3d464a507be"
-if [ "$MD5" = "$REFERENCE_MD5" ]; then
-  echo "  (verified: matches the reference English build)"
+# Two reference builds: 6-character player names (default) and the legacy
+# 4-character build (generate.py --no-extended-names). A good build matches one.
+MD5_EXTENDED="497648ef9b2d5d469ffd85c7bc9805fd"
+MD5_LEGACY="57b5ccc203b7192020a1d3d464a507be"
+if [ "$MD5" = "$MD5_EXTENDED" ]; then
+  echo "  (verified: matches the reference English build — 6-character names)"
+elif [ "$MD5" = "$MD5_LEGACY" ]; then
+  echo "  (verified: matches the reference English build — legacy 4-character names)"
 else
-  echo "  (note: differs from the reference build $REFERENCE_MD5 —"
-  echo "   this is fine if you intended source changes; otherwise double-check your ROMs)"
+  echo "  (note: matches neither reference build ($MD5_EXTENDED extended /"
+  echo "   $MD5_LEGACY legacy) — fine if you intended source changes; else check your ROMs)"
 fi
 echo "Play it in any SNES emulator. Enjoy the English JP 1.0 ROM."
