@@ -93,7 +93,7 @@ def collect_names(text: str) -> set[str]:
 def en_namespace(
     text: str,
     names: set[str],
-    hooks: frozenset[str] = frozenset(),
+    aliased: frozenset[str] = frozenset(),
     shared: frozenset[str] = frozenset(),
 ) -> str:
     """Rename the relocated symbols in ``text`` into the ``EN_`` namespace.
@@ -104,7 +104,7 @@ def en_namespace(
       original, and cross-block references stay in step with their definitions.
     * ``shared`` names are left bare -- globals referenced from outside this
       subsystem (e.g. ``TheFont``, read by bank_00's font upload).
-    * Each name in ``hooks`` additionally keeps its bare form as an alias
+    * Each name in ``aliased`` additionally keeps its bare form as an alias
       placed directly above the ``EN_`` definition, so an unmodified JP
       ``JSL Foo`` still lands on our version while our own code calls
       ``EN_Foo``.
@@ -130,7 +130,7 @@ def en_namespace(
         namespaced_lines.append(prefixed + separator + comment)
     text = "\n".join(namespaced_lines)
 
-    for hook in sorted(hooks):
+    for hook in sorted(aliased):
         text = re.sub(
             rf"^(#?)EN_{re.escape(hook)}:",
             rf"\1{hook}:\n\1EN_{hook}:",
@@ -201,9 +201,9 @@ class Relocation:
 
     A relocation is also the single source of truth for what it *hooks*. A
     generator lists the JP entry points it intercepts in :attr:`hooked` and the
-    blocks it carries along in :attr:`relocated`; the driver frees every hooked
+    blocks it carries along in :attr:`carried`; the driver frees every hooked
     name in the base and then, *per name*, either lets the relocated copy claim
-    a bare alias (recorded in :attr:`hooks`) or -- when a same-bank caller
+    a bare alias (recorded in :attr:`aliased`) or -- when a same-bank caller
     stays behind and cannot reach the copy -- lays a landing-pad stub in
     :attr:`pad_region`. Which of the two a hook needs is computed from the
     program's callers (:meth:`snes_assembly_parser.Rom.needs_landing_pad`), not
@@ -213,10 +213,10 @@ class Relocation:
     #: The JP entry points this relocation intercepts, in the order a landing
     #: pad would lay them (freed in the base; each becomes an alias or a pad).
     hooked: tuple[str, ...] = ()
-    #: The source blocks this relocation carries with it. A hooked name's
-    #: same-bank caller only forces a pad if its block is *not* in here (it
-    #: stays behind); a caller that moves along reaches the copy directly.
-    relocated: frozenset[str] = field(default_factory=frozenset)
+    #: The source blocks this relocation carries out of the base with it. A
+    #: hooked name's same-bank caller only forces a pad if its block is *not*
+    #: in here (it stays behind); a caller that moves along reaches the copy.
+    carried: frozenset[str] = field(default_factory=frozenset)
     #: Free-ROM (``NULL_``) label to lay landing-pad stubs in, and their header
     #: comment -- for the hooks a caller-analysis decides need one.
     pad_region: str | None = None
@@ -224,11 +224,12 @@ class Relocation:
     #: Optional comment lines to annotate a freed base definition with (why the
     #: JP name is dead / where its data went), keyed by hook name.
     hook_notes: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    #: The hooked names that claim a bare alias in the relocated code (the ones
-    #: *not* given a pad). Derived by the driver's hook wiring, not declared.
-    hooks: frozenset[str] = field(default_factory=frozenset)
+    #: The subset of :attr:`hooked` that claim a bare alias in the relocated
+    #: code (the ones *not* given a pad). Derived by the driver's hook wiring,
+    #: not declared.
+    aliased: frozenset[str] = field(default_factory=frozenset)
     shared: frozenset[str] = field(default_factory=frozenset)
-    #: When ``False`` (the change-free baseline), no :attr:`hooks` alias is
+    #: When ``False`` (the change-free baseline), no :attr:`aliased` alias is
     #: emitted -- the relocated names stay purely ``EN_``, so no unmodified
     #: caller is redirected.
     changes: bool = True
@@ -293,12 +294,14 @@ class Relocation:
             if should_namespace
         )
         names = sublabel_names(combined, collect_names(combined))
-        hooks = self.hooks if self.changes else frozenset()
+        aliased = self.aliased if self.changes else frozenset()
         return [
             Placement(
                 org,
                 (
-                    en_namespace(text, names, hooks=hooks, shared=self.shared)
+                    en_namespace(
+                        text, names, aliased=aliased, shared=self.shared
+                    )
                     if should_namespace
                     else text
                 ),

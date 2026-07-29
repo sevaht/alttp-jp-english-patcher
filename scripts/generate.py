@@ -23,6 +23,7 @@ its own function -- so there is nothing file-wide to trace through.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 
 from snes_assembly_parser import (
@@ -45,6 +46,16 @@ from graft import Relocation, bank_header, mirror, require_start, substitute
 
 USDASM = Path("../usdasm")
 JPDASM = Path("../jpdasm")
+
+
+@dataclass(frozen=True)
+class Sources:
+    """The two input disassemblies the graft pulls from, bundled so each
+    subsystem takes one argument instead of two in an easy-to-swap order."""
+
+    us: Rom
+    jp: Rom
+
 
 # A landing-pad block's header comment: the real routines live a bank away, the
 # freed JP entry-point names stay here and forward with a JSL/RTS bridge.
@@ -71,7 +82,7 @@ def _redirect(bank: str, file: str) -> tuple[str, ...]:
 THEFONT_LABELS = frozenset({"TheFont", "TheFont_end"})
 
 
-def text(us: Rom, *, changes: bool) -> Relocation:
+def text(sources: Sources, *, changes: bool) -> Relocation:
     """The US text subsystem: the VWF font (bank ``$20``), the message engine
     (mirror-placed to ``$2E``), and the message data (``$22``/``$23``).
 
@@ -80,6 +91,7 @@ def text(us: Rom, *, changes: bool) -> Relocation:
     the entire live subsystem. Dead blocks drop out, their space held with an
     ``org`` so survivors keep their +$200000 mirror address.
     """
+    us, jp = sources.us, sources.jp
     engine = us.extract(
         ("RenderText", "CreateMessagePointers", "TextCommandLengths"),
         recursive=True,
@@ -96,8 +108,8 @@ def text(us: Rom, *, changes: bool) -> Relocation:
     )
     main = us.blocks_until("Message_Data")
     overflow = us.blocks_until("Message_DataExtra")
-    decompress_hook = 0x0EF572  # JP DecompressFontGFX
-    masks_hook = 0x0EFCB2  # JP BuildSomeTextMasks
+    decompress_hook = jp.address_of("DecompressFontGFX")
+    masks_hook = jp.address_of("BuildSomeTextMasks")
 
     if changes:
         # (1) [NAME] field: JP names are 4 chars, the stock US handler 6 wide.
@@ -268,7 +280,7 @@ def text(us: Rom, *, changes: bool) -> Relocation:
             f"#_{mirror(decompress_hook):06X}: JML EN_TransferFontToVRAM"
             "       ; upload TheFont, then RTL",
             mirror(decompress_hook),
-            "Hook: DecompressFontGFX (mirror of JP $0EF572).",
+            f"Hook: DecompressFontGFX (mirror of JP ${decompress_hook:06X}).",
             namespace=False,
         )
         relocation.place(
@@ -279,7 +291,7 @@ def text(us: Rom, *, changes: bool) -> Relocation:
             "EN_BuildSomeTextMasks:\n"
             f"#_{mirror(masks_hook):06X}: RTL",
             mirror(masks_hook),
-            "Hook: BuildSomeTextMasks (mirror of JP $0EFCB2).",
+            f"Hook: BuildSomeTextMasks (mirror of JP ${masks_hook:06X}).",
             namespace=False,
         )
     relocation.place(
@@ -290,10 +302,11 @@ def text(us: Rom, *, changes: bool) -> Relocation:
     return relocation
 
 
-def font_upload(jp: Rom, *, changes: bool) -> Relocation:
+def font_upload(sources: Sources, *, changes: bool) -> Relocation:
     """Bank ``$20``: JP ``TransferFontToVRAM``, mirror-placed and repointed to
     upload our plain-2bpp ``TheFont`` to VRAM $E000 (was a $7E2000 VWF buffer).
     """
+    jp = sources.jp
     root = "TransferFontToVRAM"
     routine = jp.extract([root], recursive=True, external=THEFONT_LABELS)
     if changes:
@@ -320,7 +333,7 @@ def font_upload(jp: Rom, *, changes: bool) -> Relocation:
     return relocation
 
 
-def credits_bank(jp: Rom, us: Rom, *, changes: bool) -> Relocation:
+def credits_bank(sources: Sources, *, changes: bool) -> Relocation:
     """Bank ``$2E``: the JP credits reader + tables, mirror-placed, with the
     glyph map swapped to the US table so credits render in the US Latin font.
 
@@ -329,92 +342,81 @@ def credits_bank(jp: Rom, us: Rom, *, changes: bool) -> Relocation:
     via bank_0E landing pads -- and keep only their EN_ names (the bare aliases
     live under the pads in bank_0E), so no hooks/shared here.
     """
-    # (blocks/pools of a group, then the leading names whose dw glyph-tile
-    # values come from the US font layout -- same length, so byte-neutral).
-    groups: tuple[tuple[tuple[Block | Pool, ...], tuple[str, ...]], ...] = (
-        (
-            (
+    us, jp = sources.us, sources.jp
+
+    @dataclass(frozen=True)
+    class Region:
+        """One contiguous credits run, mirror-placed as a unit. ``us_glyphs``
+        are the leading glyph->tile tables whose ``dw`` values are re-pointed
+        at the US font (swapped from the identically-named US block/pool, same
+        length so byte-neutral); ``jp_kept`` are the text/code/data members
+        left as JP. Placed in order: glyph tables first, then kept."""
+
+        us_glyphs: tuple[Block | Pool, ...]
+        jp_kept: tuple[Block | Pool, ...]
+
+        @property
+        def members(self) -> tuple[Block | Pool, ...]:
+            return (*self.us_glyphs, *self.jp_kept)
+
+    regions = (
+        Region(
+            us_glyphs=(
                 Block("Credits_CharacterToTile"),
                 Block("CreditsBlankFillTile"),
-                Pool("CreditsTextLine"),
             ),
-            ("Credits_CharacterToTile", "CreditsBlankFillTile"),
+            jp_kept=(Pool("CreditsTextLine"),),
         ),
-        (
-            (
-                Pool("Credits_AddNextAttribution"),
-                Block("Credits_AddNextAttribution"),
-            ),
-            ("Credits_AddNextAttribution",),
+        Region(
+            # the pool holds the glyph .digits (swapped) then data offsets that
+            # match US, so the whole pool re-points byte-neutrally.
+            us_glyphs=(Pool("Credits_AddNextAttribution"),),
+            jp_kept=(Block("Credits_AddNextAttribution"),),
         ),
-        (
-            (
+        Region(
+            us_glyphs=(),  # ending-sequence tilemap keeps JP palette attrs
+            jp_kept=(
                 Pool("Credits_AddEndingSequenceText"),
                 Block("Credits_AddEndingSequenceText"),
             ),
-            (),  # ending-sequence tilemap keeps JP palette attributes
         ),
     )
     readers = ("Credits_AddNextAttribution", "Credits_AddEndingSequenceText")
 
-    # The two readers are the hooks; they are reached across banks by a
-    # same-bank caller in bank_0E's credits driver (which does NOT relocate),
-    # so caller-analysis will give each a landing pad in bank_0E's freed ROM.
+    # The readers are the hooks: a same-bank caller in bank_0E's credits driver
+    # (not relocated) reaches them, so caller-analysis gives each a landing pad
+    # in bank_0E's freed ROM.
     relocation = Relocation(
         hooked=readers,
-        relocated=frozenset(
-            block.name for blocks, _ in groups for block in blocks
+        carried=frozenset(
+            member.name for region in regions for member in region.members
         ),
         pad_region="NULL_0EEDFB",
         pad_header=_redirect("2E", "en_credits.asm"),
         changes=changes,
     )
-    for blocks, glyph_blocks in groups:
-        group = jp.concat(list(blocks))
+    for region in regions:
+        group = jp.concat(list(region.members))
         if changes:
-            # Splice the US glyph-tile dw rows over the group's leading dw
-            # values (pool data before block, matching concat; same length
-            # JP<->US, so byte-neutral -- the JP text data below is kept).
-            us_rows: list[list[str]] = []
-            for name in glyph_blocks:
-                if name in us.pool_names:
-                    us_rows += [
-                        line.arguments
-                        for line in us.pool(name, comments=False).lines
-                        if line.opcode == "dw"
-                    ]
-                if name in us.label_names:
-                    us_rows += [
-                        line.arguments
-                        for line in us.block(name, comments=False).lines
-                        if line.opcode == "dw"
-                    ]
-            spliced = 0
-            for line in group.lines:
-                if line.opcode == "dw" and spliced < len(us_rows):
-                    line.arguments = us_rows[spliced]
-                    spliced += 1
-            if spliced != len(us_rows):
-                msg = f"glyph splice: wrote {spliced} of {len(us_rows)}"
-                raise ValueError(msg)
-            if any(block.name in readers for block in blocks):
+            if region.us_glyphs:
+                group.overlay_dw(us.concat(list(region.us_glyphs)).dw_rows())
+            if any(member.name in readers for member in region.members):
                 group.return_long()
         start = require_start(group)
         relocation.place(
-            group,
-            mirror(start),
-            f"credits group at mirror of JP ${start:06X}.",
+            group, mirror(start), f"credits region, mirror of JP ${start:06X}."
         )
     return relocation
 
 
-def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
+def item_menu(sources: Sources, *, changes: bool) -> Relocation:
     """Bank ``$2D``: the US item menu, mirror-placed. Four entry routines get a
     DBR-setting trampoline (their bodies become ``<name>_body`` and return
     long);
     the name-text tables get the US content, with the 2-row US ``Mirror`` table
     duplicated to JP's 4-row slot (cascading the rest forward $20 bytes).
     """
+    us, jp = sources.us, sources.jp
     entries = (
         "UpdateBottleMenu",
         "DrawAbilityText",
@@ -449,7 +451,7 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
     # relocated blocks (bodies + name-text + cursor) are what moves along.
     relocation = Relocation(
         hooked=entries,
-        relocated=frozenset(
+        carried=frozenset(
             [us_name for us_name, _, _ in bodies]
             + [*name_text, "MenuCursorPositions"]
         ),
@@ -531,13 +533,14 @@ def item_menu(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
     return relocation
 
 
-def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
+def file_select(sources: Sources, *, changes: bool) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry, packed
     contiguously from ``$2C8000`` (two JP-restored save routines are too big
     for
     their US slots to mirror-place). Pulled whole by recursion from the entry
     points; a few come from JP for the dual-save backup the US dropped.
     """
+    us, jp = sources.us, sources.jp
     # The entry points -- every symbol un-relocated code reaches this subsystem
     # by. They are both the recursion ROOTS (closure pulls the transitive
     # helpers/data) and the HOOKS kept bare so unmodified callers resolve.
@@ -693,23 +696,23 @@ def file_select(us: Rom, jp: Rom, *, changes: bool) -> Relocation:
     for name in packed_blocks:
         # US/JP block (pool before routine) with its byte-neutral edits from
         # the table above applied.
-        source = jp if name in jp_blocks else us
+        origin = jp if name in jp_blocks else us
         seg_lines = []
-        if name in source.pool_names:
-            seg_lines += source.pool(name, comments=False).lines
-        seg_lines += source.block(name, comments=False).lines
+        if name in origin.pool_names:
+            seg_lines += origin.pool(name, comments=False).lines
+        seg_lines += origin.block(name, comments=False).lines
         segment = Assembly(seg_lines)
         if changes:
             segment.apply_edits(edits.get(name, []))
         lines += segment.lines
-    if changes:  # the IRQ handler has no US/JP label -- built from a range
+    if changes:  # IRQ handler built from a sublabel, not a top-level block
         lines += build_irq_handler().lines
     # The entry points are the hooks; the whole recursive closure is what
     # relocates, so the one same-bank caller (a BRL inside FileSelect_
     # HandleInput, itself relocated) moves along -> every hook is an alias.
     relocation = Relocation(
         hooked=tuple(sorted(hooks)),
-        relocated=frozenset(entry.name for entry in reachable),
+        carried=frozenset(entry.name for entry in reachable),
         changes=changes,
     )
     relocation.place(Assembly(lines), 0x2C8000, "file-select, packed.")
@@ -860,8 +863,8 @@ def _wire_hooks(english: Rom, jp: Rom, relocations: list[Relocation]) -> None:
 
     For each relocation: split its :attr:`~graft.Relocation.hooked` names into
     the ones a bare alias reaches (recorded back on the relocation as
-    ``hooks``, for ``EN_`` namespacing) and the ones a same-bank caller strands
-    (given a landing pad in the relocation's ``pad_region``). Then free every
+    ``aliased``, for ``EN_`` namespacing) and the ones a same-bank caller
+    strands (a landing pad in the relocation's ``pad_region``). Then free every
     hooked name in the base. Run *before* the relocations are added, so the
     alias set it records is the one their pieces emit.
     """
@@ -869,9 +872,11 @@ def _wire_hooks(english: Rom, jp: Rom, relocations: list[Relocation]) -> None:
         pad_names = tuple(
             name
             for name in relocation.hooked
-            if jp.needs_landing_pad(name, relocated=relocation.relocated)
+            if jp.needs_landing_pad(name, relocated=relocation.carried)
         )
-        relocation.hooks = frozenset(relocation.hooked) - frozenset(pad_names)
+        relocation.aliased = frozenset(relocation.hooked) - frozenset(
+            pad_names
+        )
         for name in relocation.hooked:
             english.hook(name, comment=relocation.hook_notes.get(name, ()))
         if pad_names:
@@ -1010,22 +1015,23 @@ def build(*, usdasm: Path, jpdasm: Path, changes: bool) -> Rom:
     Writing it back out -- base banks hooked in place, graft banks beside them
     -- is the caller's :meth:`Rom.write`.
     """
-    us = Rom.load(usdasm / "main.asm")
-    jp = Rom.load(jpdasm / "main.asm")
-    english = jp.copy()
+    sources = Sources(
+        us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
+    )
+    english = sources.jp.copy()
     relocations = [
-        text(us, changes=changes),
-        font_upload(jp, changes=changes),
-        credits_bank(jp, us, changes=changes),
-        item_menu(us, jp, changes=changes),
-        file_select(us, jp, changes=changes),
+        text(sources, changes=changes),
+        font_upload(sources, changes=changes),
+        credits_bank(sources, changes=changes),
+        item_menu(sources, changes=changes),
+        file_select(sources, changes=changes),
         graphics(changes=changes),
         file_select_palette(),
     ]
     # Wire hooks first: it classifies each hook (alias vs pad) from the
     # pristine JP's callers and records the alias set the pieces then emit.
     if changes:
-        _wire_hooks(english, jp, relocations)
+        _wire_hooks(english, sources.jp, relocations)
     for relocation in relocations:
         english.add(relocation)
     if changes:
