@@ -1,36 +1,61 @@
-#!/usr/bin/env bash
-# Lint + typecheck the patcher's Python (scripts/*.py), self-contained via uv
-# (dev tools + [tool.*] settings come from this directory's pyproject.toml, the
-# same way snes-assembly-parser lints its own code). The parser library is used
-# from a local checkout on MYPYPATH so mypy resolves the imports.
-#
-#   SNES_PARSER_DIR  library checkout for mypy (default: ./.deps/snes-assembly-parser,
-#                    populated by ./apply.sh)
-set -euo pipefail
+#!/usr/bin/env python3
+from __future__ import annotations
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-lib="${SNES_PARSER_DIR:-$here/.deps/snes-assembly-parser}/src"
+import argparse
+import os
+from pathlib import Path
+from subprocess import CalledProcessError, run
 
-command -v uv >/dev/null 2>&1 || { echo "error: uv not found" >&2; exit 1; }
-[ -d "$lib/snes_assembly_parser" ] || {
-    echo "error: snes-assembly-parser not found at $lib" >&2
-    echo "  run ./apply.sh once, or set SNES_PARSER_DIR" >&2
-    exit 1; }
 
-cd "$here/scripts"
-scripts=(
-    graft.py gitignore.py verify_base.py generate.py
-)
-run() { local msg="$1"; shift; echo "== $msg =="; "$@"; echo; }
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Executes linters and tests.")
+    parser.add_argument(
+        "--junitxml",
+        help="Create junit-xml style test results report file at given path.",
+    )
+    args = parser.parse_args()
+    this_script = Path(__file__).resolve()
+    project_root_dir = this_script.parent
+    scripts = [this_script.name]
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    env["PYTHONPATH"] = str(project_root_dir / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    commands = [
+        (
+            ["black", "--target-version", "py312", ".", *scripts],
+            "formatting code",
+        ),
+        (
+            ["ruff", "check", "--fix", "--select", "I", ".", *scripts],
+            "sorting imports",
+        ),
+        (["mypy", "--scripts-are-modules", *scripts], "typechecking scripts"),
+        (["mypy", "."], "typechecking package"),
+        (["ruff", "check", ".", *scripts], "linting"),
+        (["vulture", "src/", "tests/", *scripts], "finding dead code"),
+        (
+            ["pytest"]
+            + ([f"--junitxml={args.junitxml}"] if args.junitxml else []),
+            "executing tests",
+        ),
+    ]
+    for command, description in commands:
+        print(f"Running {command[0]}... ({description})")
+        try:
+            run(
+                ["uv", "run", *command],  # noqa: S607
+                check=True,
+                cwd=project_root_dir,
+                env=env,
+            )
+        except CalledProcessError as e:
+            return e.returncode
+        print()
+    print("All checks completed successfully!")
+    return 0
 
-run "format code"    uv run black --target-version py312 "${scripts[@]}"
-run "sort imports"   uv run ruff check --fix --select I "${scripts[@]}"
-run "typecheck"      env MYPYPATH="$lib" uv run mypy "${scripts[@]}"
-run "lint"           uv run ruff check "${scripts[@]}"
-# --min-confidence mirrors [tool.vulture] in ../pyproject.toml (vulture only
-# reads that config from its CWD, and we run from scripts/). Relocation
-# .placements() is used by the library's Rom.add via the Relocatable protocol,
-# which vulture cannot see across the package boundary (a 60%-confidence false
-# positive).
-run "find dead code" uv run vulture --min-confidence 70 "${scripts[@]}"
-echo "All checks passed!"
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-extract_english_assets.py — regenerate the ROM-derived font assets for the English
-translation from your own ROMs. Nothing copyrighted is committed to this repo; run
-this once (per checkout) to produce the three `english/*.bin` / `*.2bpp` files.
+binextract-us.py — regenerate the US ROM-derived font/menu assets for the English
+translation from your own US ROM. Nothing copyrighted is committed to this repo; the
+`binextract.py` stub runs this (and binextract-jp.py) to produce the `english/*` files.
 
-    python3 extract_english_assets.py --jp-rom JP1.0.sfc --us-rom US.sfc
+    python3 binextract-us.py              # uses ./alttp-us.sfc
+    python3 binextract-us.py --us-rom US.sfc
 
-You need BOTH ROMs:
-  * JP 1.0  (md5 03a63945398191337e896e5771f77173)
-  * US      (md5 608c22b8ff930c62dc2de54bcd6eba72)
+You need the US ROM (md5 608c22b8ff930c62dc2de54bcd6eba72), by default named
+`alttp-us.sfc` in this directory. (The JP 1.0 binaries come from binextract-jp.py.)
 All outputs are derived from the US ROM:
   * font.2bpp                  (plain ROM-offset byte slice)
   * gfx_dc.2bppc, gfx_dd.2bppc (US menu/file-select font sheets, compressed byte slices)
@@ -63,15 +63,14 @@ def write_asset(name, data):
     return got == want
 
 def main():
-    ap = argparse.ArgumentParser(description="extract ROM-derived font assets for the English build")
-    ap.add_argument("--jp-rom", default=os.path.join(HERE, "alttp.sfc"),
-                    help="JP 1.0 ROM (default: ./alttp.sfc)")
-    ap.add_argument("--us-rom", required=True, help="US ROM")
+    ap = argparse.ArgumentParser(description="extract the US ROM-derived font/menu assets for the English build")
+    ap.add_argument("--us-rom", default=os.path.join(HERE, "alttp-us.sfc"),
+                    help="US ROM (default: ./alttp-us.sfc)")
     a = ap.parse_args()
 
-    a.jp_rom = os.path.abspath(a.jp_rom); a.us_rom = os.path.abspath(a.us_rom)
-    print("Validating ROMs:")
-    check_rom(a.jp_rom, "jp"); check_rom(a.us_rom, "us")
+    a.us_rom = os.path.abspath(a.us_rom)
+    print("Validating ROM:")
+    check_rom(a.us_rom, "us")
     os.makedirs(ENG, exist_ok=True)
 
     print("Extracting assets:")
@@ -117,9 +116,7 @@ def main():
     if not ok:
         die("one or more assets did not match the expected md5.\n"
             "       Double-check that your US ROM matches the md5 at the top of this script.")
-    print("\nAll assets extracted and verified. You can now build:")
-    print("  python3 binextract.py && rm -f out.sfc && wine asarmon.exe "
-          "-wnoW1006 -wnoW1030 --fix-checksum=off main.asm out.sfc")
+    print("\nUS assets extracted and verified.")
 
 if __name__ == "__main__":
     main()

@@ -1,41 +1,88 @@
-# Self-contained uv tooling project for the patcher's Python (scripts/*.py).
-# Not a package -- it exists so `uv run <tool>` resolves the dev tools and this
-# file's [tool.*] settings, exactly the way the snes-assembly-parser library
-# lints its own code. Run `./checks`.
-#
-# The snes-assembly-parser library itself is NOT a dependency here: the scripts
-# use a local (possibly unpublished) checkout, so `./checks` points MYPYPATH at
-# it rather than installing a pinned version.
+[build-system]
+requires = ["hatchling (>=1.29.0,<2.0.0)", "hatch-vcs (>=0.5.0,<1.0.0)"]
+build-backend = "hatchling.build"
 
 [project]
-name = "alttp-english-patcher"
-version = "0"
+name = "alttp-jp-english-patcher"
+dynamic = ["version"]
+description = "Graft the US English text/menu subsystems into the A Link to the Past JP 1.0 disassembly."
+authors = [
+    {name = "Jacob McIntosh", email = "nacitar.sevaht@gmail.com"}
+]
+readme = "README.md"
+license = "Unlicense"
 requires-python = ">=3.12"
+keywords = ["alttp", "zelda", "snes", "disassembly", "romhack", "translation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Assemblers",
+    "Typing :: Typed",
+]
+dependencies = [
+    "snes-assembly-parser",
+    "platformdirs>=4.10.0",
+]
 
-[tool.uv]
-package = false
+[project.scripts]
+alttp-jp-english-patcher = "alttp_jp_english_patcher.__main__:main"
+
+# snes-assembly-parser is not on PyPI yet; resolve it from git for local dev
+# (uv sync). Remove this once it is published.
+[tool.uv.sources]
+snes-assembly-parser = {git = "https://github.com/nacitar/snes-assembly-parser.git", branch = "main"}
 
 [dependency-groups]
 dev = [
-    "black>=26.3.1,<27.0.0",
-    "mypy>=1.20.0,<2.0.0",
-    "ruff>=0.15.8,<0.16.0",
-    "vulture>=2.14,<3.0.0",
+    "black (>=26.3.1,<27.0.0)",
+    "build (>=1.4.2,<2.0.0)",
+    "mypy (>=1.20.0,<2.0.0)",
+    "pytest (>=9.0.2,<10.0.0)",
+    "ruff (>=0.15.8,<0.16.0)",
+    "twine (>=6.2.0,<7.0.0)",
+    "vulture (>=2.14,<3.0.0)",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sevaht/alttp-jp-english-patcher"
+Source = "https://github.com/sevaht/alttp-jp-english-patcher"
+Issues = "https://github.com/sevaht/alttp-jp-english-patcher/issues"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0.dev0"
+
+[tool.hatch.version.raw-options]
+fallback_version = "0.0.0"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alttp_jp_english_patcher"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/LICENSE"]
 
 [tool.black]
 line-length = 79
 skip-magic-trailing-comma = true
+# deploy/ holds the target-side scripts (their own old style); leave them alone.
+force-exclude = "src/alttp_jp_english_patcher/deploy/.*"
 
 [tool.mypy]
 strict = true
+exclude = ["^src/alttp_jp_english_patcher/deploy/", "^dist/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 79
-# scripts/ holds the local modules (graft, patch, base_edits, ...), so isort
-# classifies them first-party -- keeping import order identical to the dev repo,
-# where these same files sit next to their pyproject.
-src = ["scripts"]
+extend-exclude = ["src/alttp_jp_english_patcher/deploy"]
 
 [tool.ruff.lint]
 extend-ignore = ["COM812", "COM819", "E203", "TD003"]
@@ -51,7 +98,10 @@ select = [
 # generators (each subsystem's constants + helpers + build inline in one
 # function), so the per-function complexity/statement caps do not apply.
 [tool.ruff.lint.per-file-ignores]
-"generate.py" = ["C901", "PLR0915"]
+"src/alttp_jp_english_patcher/generate.py" = ["C901", "PLR0915"]
+"checks" = ["S603"]
+"tests/**/*" = ["PLR2004", "S101"]
 
 [tool.vulture]
 min_confidence = 70
+exclude = ["src/alttp_jp_english_patcher/deploy/"]

@@ -3,8 +3,8 @@
 
 The ROM-derived binaries under ``english/`` are copyrighted game data and must
 not be committed (same policy as the disassembly's own ``bin/``); they are
-regenerated from the user's ROMs by ``extract_english_assets.py``. Idempotent:
-only rules not already present are appended.
+regenerated from the user's ROMs by ``binextract-us.py``. Idempotent: only
+rules not already present are appended.
 """
 
 from __future__ import annotations

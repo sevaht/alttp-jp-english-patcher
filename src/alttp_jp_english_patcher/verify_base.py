@@ -18,13 +18,31 @@ import argparse
 import hashlib
 import sys
 import tempfile
+from importlib import resources
 from pathlib import Path
 
 from snes_assembly_parser import Assembly
 
-from generate import build
+from .generate import build
 
-REFERENCE = Path(__file__).with_name("reference_hashes.txt")
+# The frozen reference is an embedded package resource: read via
+# importlib.resources; --freeze writes back to the source file (only meaningful
+# in an editable/source checkout, which is where you would re-freeze).
+_REFERENCE = ("resources", "reference_hashes.txt")
+
+
+def _reference_text() -> str:
+    return (
+        resources.files("alttp_jp_english_patcher")
+        .joinpath(*_REFERENCE)
+        .read_text(encoding="utf-8")
+    )
+
+
+def _reference_source_path() -> Path:
+    return Path(__file__).resolve().parent.joinpath(*_REFERENCE)
+
+
 # The base banks the graft hooks (the only base banks it changes).
 BASE_BANKS = (
     "bank_00",
@@ -59,7 +77,7 @@ def compute(jpdasm: Path, usdasm: Path) -> dict[str, str]:
 
 def load_reference() -> dict[str, str]:
     reference: dict[str, str] = {}
-    for raw in REFERENCE.read_text().splitlines():
+    for raw in _reference_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -90,10 +108,11 @@ def main() -> int:
     got = compute(args.src, args.usdasm)
     if args.freeze:
         body = "".join(f"{bank}: {got[bank]}\n" for bank in sorted(got))
-        REFERENCE.write_text(
+        destination = _reference_source_path()
+        destination.write_text(
             "# base-bank hook signature hashes (see verify_base.py)\n" + body
         )
-        print(f"froze {len(got)} hashes to {REFERENCE.name}")
+        print(f"froze {len(got)} hashes to {destination.name}")
         return 0
 
     reference = load_reference()
