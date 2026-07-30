@@ -73,6 +73,10 @@ exclude = ["^src/alttp_jp_english_patcher/deploy/", "^dist/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `slow` tests (e.g. the full-build base-hash drift guard) are opt-in: run them
+# with `pytest -m slow`; the default run (and ./checks) deselects them.
+markers = ["slow: long-running; run with `pytest -m slow`"]
+addopts = "-m 'not slow'"
 
 [tool.ruff]
 line-length = 79

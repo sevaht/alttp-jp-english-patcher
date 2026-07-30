@@ -923,9 +923,9 @@ def apply_base_edits(english: Rom, *, migrate: bool = True) -> None:
     english.set_operand(0x00E557, "LDA.b #TheFont>>16")
     english.set_operand(0x00E563, "LDA.w #TheFont")
     english.set_operand(0x00E568, "LDX.w #(TheFont_end-TheFont)/2-1")
-    # File-select: re-pin the FairyY data the relocation left behind, and keep
-    # the one in-bank CopySaveToWRAM reference on the preserved JP original.
-    english.insert_before("FileSelect_FairyY", ["org $0CCC67"])
+    # File-select: keep the one in-bank CopySaveToWRAM reference pointing at
+    # the preserved JP original (which the graft leaves in place, unmoved -- so
+    # no org re-pin is needed).
     english.rewrite_reference(
         0x0CCE8B, "CopySaveToWRAM", "UNREACHABLE_CopySaveToWRAM"
     )
