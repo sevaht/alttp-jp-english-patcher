@@ -664,15 +664,17 @@ def file_select(
     # absolute addresses, so blocks are emitted in US source order to keep the
     # few fall-through routines beside their successor.
     # Intro_SetStripesAndAdvance is a US #-label the single-unit closure cannot
-    # reach, so it is named explicitly and pulled from US like the rest.
+    # reach, so it is named explicitly and pulled from US like the rest. The
+    # relocated code JSRs it in every build (baseline included), so pull it
+    # unconditionally -- otherwise the baseline has a dangling reference and
+    # won't assemble.
     reachable = us.closure(sorted(hooks), recursive=True)
     packed_blocks = list(
         dict.fromkeys(
             entry.name for entry in reachable if isinstance(entry, Block)
         )
     )
-    if changes:
-        packed_blocks += ["Intro_SetStripesAndAdvance"]
+    packed_blocks += ["Intro_SetStripesAndAdvance"]
 
     lines = []
     for name in packed_blocks:
