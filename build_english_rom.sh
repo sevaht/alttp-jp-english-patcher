@@ -86,16 +86,17 @@ rm -f "$LOG"
 MD5=$(md5sum "$OUT" | cut -d' ' -f1)
 echo
 echo "SUCCESS -> $OUT  ($(stat -c%s "$OUT") bytes, md5 $MD5)"
-# Two reference builds: 6-character player names (default) and the legacy
-# 4-character build (generate.py --no-extended-names). A good build matches one.
-MD5_EXTENDED="497648ef9b2d5d469ffd85c7bc9805fd"
+# Reference builds — a good build matches one of these three:
+#   default    6-character names + US/Japanese save-slot migration
+#   no-migrate 6-character names, generate.py --no-save-compatibility
+#   legacy     4-character names, generate.py --no-extended-names
+MD5_DEFAULT="6d4ac8e24e866f8b47881cda642455ca"
+MD5_NOMIGRATE="497648ef9b2d5d469ffd85c7bc9805fd"
 MD5_LEGACY="57b5ccc203b7192020a1d3d464a507be"
-if [ "$MD5" = "$MD5_EXTENDED" ]; then
-  echo "  (verified: matches the reference English build — 6-character names)"
-elif [ "$MD5" = "$MD5_LEGACY" ]; then
-  echo "  (verified: matches the reference English build — legacy 4-character names)"
-else
-  echo "  (note: matches neither reference build ($MD5_EXTENDED extended /"
-  echo "   $MD5_LEGACY legacy) — fine if you intended source changes; else check your ROMs)"
-fi
+case "$MD5" in
+  "$MD5_DEFAULT")   echo "  (verified: reference build — 6-char names + save compatibility)" ;;
+  "$MD5_NOMIGRATE") echo "  (verified: reference build — 6-char names, no save migration)" ;;
+  "$MD5_LEGACY")    echo "  (verified: reference build — legacy 4-char names)" ;;
+  *) echo "  (note: matches no reference build — fine if you intended source changes; else check your ROMs)" ;;
+esac
 echo "Play it in any SNES emulator. Enjoy the English JP 1.0 ROM."

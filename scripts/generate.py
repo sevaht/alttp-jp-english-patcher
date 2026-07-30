@@ -77,6 +77,141 @@ def _redirect(bank: str, file: str) -> tuple[str, ...]:
     )
 
 
+# In-place save migrator, packed into the file-select bank and JSR'd on entry.
+# Any foreign save slot -- a US save, or a vanilla Japanese save -- is
+# converted to our 6-word-name-at-$3D5 format so it loads and plays. A word at
+# $410 tags
+# ours ($0006); the vanilla erase zeroes the whole slot, so a foreign save
+# reads $0000 there. It scans all 6 slots (3 files x main+backup, $500-strided
+# from $700000). Cheap to re-run: only a slot with a $55AA marker but no $410
+# tag ($3E1 = JP-family / $3E5 = US) pays the checksum + convert, once, then it
+# is tagged and skipped. New files are tagged in InitializeSaveFile.
+_SAVE_MIGRATION = "\n".join(  # noqa: FLY002 -- one line per asm statement
+    [
+        # Boot hook: bank_00 InitializeMemoryAndSRAM zeroes each main slot's
+        # $3E1 word when it isn't the $55AA marker -- which a US save (marker
+        # at $3E5) always trips, corrupting its checksum before the file-select
+        # ever runs. So migrate here, BEFORE that check, via relocate_block at
+        # $0087EF (see apply_base_edits). Y holds the routine's return address.
+        "MigrateAtBoot:",  # emitted EN_-namespaced -> EN_MigrateAtBoot
+        "PHY",
+        "JSR MigrateSaveSlots",
+        "PLY",
+        "LDA.l $7003E1",  # displaced instruction from $0087EF (file-1 marker)
+        "JML $0087F3",  # resume bank_00's per-slot $55AA marker checks
+        "MigrateSaveSlots:",
+        "PHP",
+        "REP #$30",  # 16-bit A/X/Y throughout
+        "STZ.b $00",  # $00 = slot offset (0, $500, ... $1900)
+        "LDX.w #$0006",  # 6 slots
+        ".next_slot",
+        "PHX",
+        "JSR MigrateOneSlot",  # migrates the slot at offset $00
+        "LDA.b $00",
+        "CLC",
+        "ADC.w #$0500",
+        "STA.b $00",
+        "PLX",
+        "DEX",
+        "BNE .next_slot",
+        "PLP",
+        "RTS",
+        "MigrateOneSlot:",  # $00 = slot offset
+        "LDX.b $00",
+        "LDA.l $700410,X",  # our-format tag
+        "BNE .done",  # already ours -> nothing to do
+        "LDA.l $7003E1,X",  # cheap marker check before the costly checksum
+        "CMP.w #$55AA",
+        "BEQ .jp",  # JP-family marker -> vanilla Japanese save
+        "LDA.l $7003E5,X",
+        "CMP.w #$55AA",
+        "BEQ .us",  # US marker
+        "RTS",  # no marker -> empty/unknown slot
+        ".jp",
+        "JSR SlotChecksumValid",
+        "BCC .done",  # not a valid save
+        "JSR ConvertJP",
+        "BRA .stamp",
+        ".us",
+        "JSR SlotChecksumValid",
+        "BCC .done",
+        "JSR ConvertUS",
+        ".stamp",
+        "JSR StampAndChecksum",
+        ".done",
+        "RTS",
+        "SlotChecksumValid:",  # $00=offset; carry set if slot sums to $5A5A
+        "LDX.b $00",
+        "STZ.b $02",  # running sum
+        "LDY.w #$0280",  # all 640 words ($000-$4FE)
+        ".sum",
+        "LDA.l $700000,X",
+        "CLC",
+        "ADC.b $02",
+        "STA.b $02",
+        "INX",
+        "INX",
+        "DEY",
+        "BNE .sum",
+        "LDA.b $02",
+        "CMP.w #$5A5A",
+        "BEQ .valid",
+        "CLC",
+        "RTS",
+        ".valid",
+        "SEC",
+        "RTS",
+        "ConvertUS:",  # US name+post-name: shift 4 bytes down, $3D9 -> $3D5
+        "LDX.b $00",
+        "LDY.w #$0017",  # 23 words: 6 name + 17 post-name (incl. the marker)
+        ".shift",
+        "LDA.l $7003D9,X",
+        "STA.l $7003D5,X",
+        "INX",
+        "INX",
+        "DEY",
+        "BNE .shift",
+        "RTS",
+        "ConvertJP:",  # vanilla Japanese name (kana) -> our \"Link  \"
+        "LDX.b $00",
+        "LDA.w #$000B",  # L
+        "STA.l $7003D5,X",
+        "LDA.w #$00C0",  # i
+        "STA.l $7003D7,X",
+        "LDA.w #$0047",  # n
+        "STA.l $7003D9,X",
+        "LDA.w #$0044",  # k
+        "STA.l $7003DB,X",
+        "LDA.w #$00A9",  # space
+        "STA.l $7003DD,X",
+        "STA.l $7003DF,X",  # space
+        "RTS",
+        "StampAndChecksum:",  # tag ours + recompute SAVEICKSM ($5A5A - sum)
+        "LDX.b $00",
+        "LDA.w #$0006",
+        "STA.l $700410,X",  # tag = 6-char variant
+        "STZ.b $02",
+        "LDX.b $00",
+        "LDY.w #$027F",  # sum $000-$4FC (all but SAVEICKSM)
+        ".sum",
+        "LDA.l $700000,X",
+        "CLC",
+        "ADC.b $02",
+        "STA.b $02",
+        "INX",
+        "INX",
+        "DEY",
+        "BNE .sum",
+        "LDA.w #$5A5A",
+        "SEC",
+        "SBC.b $02",
+        "LDX.b $00",
+        "STA.l $7004FE,X",
+        "RTS",
+    ]
+)
+
+
 # The VWF font blob's labels, shared by the text engine and the bank_00 upload;
 # left un-namespaced so both reach the same ``TheFont``.
 THEFONT_LABELS = frozenset({"TheFont", "TheFont_end"})
@@ -520,7 +655,7 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
 
 
 def file_select(
-    sources: Sources, *, changes: bool, extended_names: bool
+    sources: Sources, *, changes: bool, extended_names: bool, save_compat: bool
 ) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry, packed
     contiguously from ``$2C8000`` (two JP-restored save routines are too big
@@ -691,6 +826,23 @@ def file_select(
         **name_edits,
     }
 
+    # Save compatibility: migrate foreign slots to our format. Only for the
+    # 6-char build (it converts *to* the $3D5 field), and skippable with
+    # save_compat=False. The migrator itself (_SAVE_MIGRATION) lands in this
+    # bank; it is *invoked* at boot from bank_00 (see apply_base_edits) so it
+    # runs before InitializeMemoryAndSRAM's $3E1 sanity zeroing.
+    migrate = changes and extended_names and save_compat
+    if migrate:
+
+        def tag_new_file(block: Assembly) -> None:
+            # tag freshly-created files ours, beside the $55AA marker write.
+            block.insert_after(
+                "STA.l $7003E1,X",
+                instructions(["LDA.w #$0006", "STA.l $700410,X"]),
+            )
+
+        edits["InitializeSaveFile"].append(tag_new_file)
+
     # This subsystem is PACKED contiguously at $2C8000, not mirror-placed (two
     # JP save-backup routines are too big to mirror). Packing reassigns
     # absolute addresses, so blocks are emitted in US source order to keep the
@@ -721,6 +873,8 @@ def file_select(
         lines += segment.lines
     if changes:  # IRQ handler built from a sublabel, not a top-level block
         lines += build_irq_handler().lines
+    if migrate:  # the save migrator, called at boot from bank_00 (see build)
+        lines += Assembly.from_content(_SAVE_MIGRATION.split("\n")).lines
     # The entry points are the hooks; the whole recursive closure is what
     # relocates, so the one same-bank caller (a BRL inside FileSelect_
     # HandleInput, itself relocated) moves along -> every hook is an alias.
@@ -904,8 +1058,23 @@ def _wire_hooks(english: Rom, jp: Rom, relocations: list[Relocation]) -> None:
             )
 
 
-def apply_base_edits(english: Rom) -> None:
+def apply_base_edits(english: Rom, *, migrate: bool = True) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
+    # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
+    # InitializeMemoryAndSRAM, BEFORE it zeroes any main slot's $3E1 word whose
+    # value isn't the $55AA marker. A US save's marker lives at $3E5, so its
+    # $3E1 would be cleared (breaking the checksum) before the file-select
+    # runs. The relocated stub migrates, replays the displaced LDA, JMLs back.
+    if migrate:
+        english.relocate_block(
+            0x0087EF,
+            "EN_MigrateAtBoot",
+            resume=0x0087F3,
+            comment=(
+                "; [ENG-FS] migrate foreign save slots before the $3E1 sanity "
+                "check (us_menu.asm).",
+            ),
+        )
     # V-IRQ active block -> the relocated name-entry raster-split handler.
     english.relocate_block(
         0x008205,
@@ -1018,7 +1187,12 @@ def patch_main_asm(english: Rom) -> None:
 
 
 def build(
-    *, usdasm: Path, jpdasm: Path, changes: bool, extended_names: bool = True
+    *,
+    usdasm: Path,
+    jpdasm: Path,
+    changes: bool,
+    extended_names: bool = True,
+    save_compat: bool = True,
 ) -> Rom:
     """Assemble the whole English program as one editable :class:`Rom`.
 
@@ -1031,6 +1205,8 @@ def build(
     Writing it back out -- base banks hooked in place, graft banks beside them
     -- is the caller's :meth:`Rom.write`. ``extended_names`` builds 6-character
     player names (the default); ``False`` is the legacy 4-character build.
+    ``save_compat`` adds the on-entry migrator that converts US / vanilla-
+    Japanese save slots to our format (the default; 6-char build only).
     """
     sources = Sources(
         us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
@@ -1041,7 +1217,12 @@ def build(
         font_upload(sources, changes=changes),
         credits_bank(sources, changes=changes),
         item_menu(sources, changes=changes),
-        file_select(sources, changes=changes, extended_names=extended_names),
+        file_select(
+            sources,
+            changes=changes,
+            extended_names=extended_names,
+            save_compat=save_compat,
+        ),
         graphics(changes=changes),
         file_select_palette(),
     ]
@@ -1052,7 +1233,9 @@ def build(
     for relocation in relocations:
         english.add(relocation)
     if changes:
-        apply_base_edits(english)  # the few edits that are not plain hooks
+        # the few edits that are not plain hooks; the boot-time save migrator
+        # is gated like file_select's (6-char build + save_compat).
+        apply_base_edits(english, migrate=extended_names and save_compat)
     patch_main_asm(english)
     return english
 
@@ -1069,6 +1252,11 @@ def main() -> None:
         action="store_true",
         help="legacy 4-character player names (default: 6-character names)",
     )
+    parser.add_argument(
+        "--no-save-compatibility",
+        action="store_true",
+        help="omit the on-entry US/Japanese save-slot migrator",
+    )
     parser.add_argument("--usdasm", type=Path, default=USDASM)
     parser.add_argument("--jpdasm", type=Path, default=JPDASM)
     parser.add_argument(
@@ -1083,6 +1271,7 @@ def main() -> None:
         jpdasm=args.jpdasm,
         changes=not args.baseline,
         extended_names=not args.no_extended_names,
+        save_compat=not args.no_save_compatibility,
     )
     generated = english.write(args.out, bank_header=bank_header)
     mode = "baseline" if args.baseline else "with changes"

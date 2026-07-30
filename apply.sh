@@ -16,7 +16,8 @@
 #
 # Usage:
 #   ./apply.sh --target /path/to/jpdasm-fork [--us-rom US.sfc] [--jp-rom JP.sfc]
-#              [--baseline] [--no-extended-names] [--verify]
+#              [--baseline] [--no-extended-names] [--no-save-compatibility]
+#              [--verify]
 #
 #   --target    the jpdasm fork to write into (required)
 #   --us-rom    if given, extract the ROM-derived binaries into the target now;
@@ -25,6 +26,7 @@
 #   --baseline  emit the change-free baseline (no base hooks, no graft edits)
 #               -- the clean base for a review diff
 #   --no-extended-names  legacy 4-character player names (default: 6-character)
+#   --no-save-compatibility  omit the on-entry US/Japanese save-slot migrator
 #   --verify    after deploying, run the base-edit regression check
 #
 # Source overrides (DIR = use this checkout, skip fetching):
@@ -35,7 +37,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-target="" ; us_rom="" ; jp_rom="" ; baseline="" ; verify="" ; extnames=""
+target="" ; us_rom="" ; jp_rom="" ; baseline="" ; verify="" ; extnames="" ; savecompat=""
 while [ $# -gt 0 ]; do
     case "${1:-}" in
         --target)   target="${2:-}"; shift 2 ;;
@@ -43,6 +45,7 @@ while [ $# -gt 0 ]; do
         --jp-rom)   jp_rom="${2:-}"; shift 2 ;;
         --baseline) baseline="--baseline"; shift ;;
         --no-extended-names) extnames="--no-extended-names"; shift ;;
+        --no-save-compatibility) savecompat="--no-save-compatibility"; shift ;;
         --verify)   verify="1"; shift ;;
         -h|--help)  grep '^#' "$0" | grep -v '^#!' | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
@@ -102,7 +105,7 @@ echo "==> generating the English program -> $target"
 # includes + 2 MB padding), and writes the entire fork -- base banks hooked in
 # place, graft banks bank_20 .. bank_2E beside them.
 run_py generate.py --usdasm "$usdasm" --jpdasm "$jpdasm" \
-    --out "$target" $baseline $extnames
+    --out "$target" $baseline $extnames $savecompat
 
 echo "==> copying build tooling"
 cp "$here/extract_english_assets.py" "$here/build_english_rom.sh" "$target/"
