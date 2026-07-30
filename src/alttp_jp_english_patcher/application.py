@@ -1,20 +1,30 @@
-"""Deploy the English graft into a pristine jpdasm fork (the CLI).
+"""Generate a patched (English) jpdasm into a target directory (the CLI).
 
-Generates the whole English program from pristine usdasm + jpdasm checkouts and
-writes it into a target fork: base banks hooked in place, graft banks beside
-them, ``main.asm`` wired. Then it drops in the build tooling (the
-``binextract`` extractors + build script + README) and updates ``.gitignore``.
+The ``--target`` is treated as an *output* directory, not an existing checkout:
+it is created if missing, and any files this produces are overwritten if it
+exists (anything else -- your ROMs, extracted binaries, built ROM -- is left
+alone). So every run starts from the pristine disassemblies and is fully
+predictable/repeatable.
 
-The parser library (``snes-assembly-parser``) is an installed dependency. The
-two disassembly *sources* are plain git checkouts, cloned on demand into the
-user cache (override with ``--usdasm`` / ``--jpdasm`` or ``USDASM_DIR`` /
-``JPDASM_DIR``).
+Each run: clones (or reuses) pristine ``usdasm`` + ``jpdasm``; copies the JP
+disassembly's support files (``asarmon.exe``, the reference ``.asm``, ``bin/``
+dirs, ``binextract.py`` -> ``binextract-jp.py``) into the target; writes the
+whole English program over it (base banks hooked in place, graft banks beside
+them, ``main.asm`` wired); drops in the build tooling (``binextract-us.py`` +
+the ``binextract.py`` stub + build script + README) and the ``.gitignore``; and
+copies the two ROMs into place (``alttp.sfc`` / ``alttp-us.sfc``) if given.
+
+The two disassembly *sources* are plain git checkouts, cloned on demand into
+the platformdirs user cache (see
+:func:`~alttp_jp_english_patcher.user_cache_path`); override with ``--usdasm``
+/ ``--jpdasm`` or ``USDASM_DIR`` / ``JPDASM_DIR``.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 from importlib import resources
 from pathlib import Path
@@ -79,16 +89,47 @@ def _resolve_source(label: str, override: Path | None, env_var: str) -> Path:
     return dest
 
 
+# ROMs the target needs: (destination filename, args attr, --flag).
+_ROMS = (
+    ("alttp.sfc", "jp_rom", "--jp-rom"),
+    ("alttp-us.sfc", "us_rom", "--us-rom"),
+)
+
+
+def _populate_from_jpdasm(jpdasm: Path, target: Path) -> None:
+    """Fill ``target`` with the pristine jpdasm's support files.
+
+    Copies everything except its git metadata and its own ``binextract.py``
+    (which becomes ``binextract-jp.py``); the generated ``.asm`` files are
+    overwritten by :meth:`Rom.write` right after. ``asarmon.exe``, the
+    reference ``.asm``, the ``bin/`` directory scaffolding, ``Makefile`` /
+    ``_build.bat``, and ``LICENSE`` come along so the target is a
+    self-contained buildable fork.
+    """
+    ignore = shutil.ignore_patterns(
+        ".git", ".github", "__pycache__", "binextract.py"
+    )
+    shutil.copytree(jpdasm, target, dirs_exist_ok=True, ignore=ignore)
+    jp_extractor = jpdasm / "binextract.py"
+    if jp_extractor.is_file():
+        shutil.copy2(jp_extractor, target / "binextract-jp.py")
+
+
 def _deploy_tooling(target: Path) -> None:
-    """Rename the base JP extractor and drop in the English build tooling."""
-    jp_extractor = target / "binextract.py"
-    renamed = target / "binextract-jp.py"
-    if jp_extractor.exists() and not renamed.exists():
-        jp_extractor.rename(renamed)
+    """Drop the English build tooling into the target (overwriting)."""
     root = resources.files("alttp_jp_english_patcher").joinpath("deploy")
     for name in _DEPLOY_FILES:
         (target / name).write_bytes(root.joinpath(name).read_bytes())
     (target / "build_english_rom.sh").chmod(0o755)
+
+
+def _place_roms(target: Path, args: argparse.Namespace) -> None:
+    """Copy any supplied ROMs into the target under their expected names."""
+    for dest_name, attr, _flag in _ROMS:
+        source = getattr(args, attr)
+        if source is not None:
+            shutil.copy2(source, target / dest_name)
+            print(f"copied {source} -> {dest_name}")
 
 
 def _update_gitignore(target: Path) -> None:
@@ -116,13 +157,25 @@ def _run_verify(jpdasm: Path, usdasm: Path) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alttp-jp-english-patcher",
-        description="Deploy the English graft into a jpdasm fork.",
+        description="Generate a patched (English) jpdasm into a directory.",
     )
     parser.add_argument(
         "--target",
         type=Path,
         required=True,
-        help="the jpdasm fork to write the English program into",
+        help="output directory (created if missing; our files overwritten)",
+    )
+    parser.add_argument(
+        "--jp-rom",
+        type=Path,
+        help="JP 1.0 ROM, copied in as alttp.sfc (required if not already "
+        "in the target)",
+    )
+    parser.add_argument(
+        "--us-rom",
+        type=Path,
+        help="US ROM, copied in as alttp-us.sfc (required if not already "
+        "in the target)",
     )
     parser.add_argument(
         "--baseline",
@@ -151,18 +204,22 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-
     target = args.target.resolve()
-    if (
-        not (target / "bank_00.asm").is_file()
-        or not (target / "main.asm").is_file()
-    ):
-        parser.error(f"{target} does not look like a jpdasm checkout")
+
+    # fail fast if a ROM is neither supplied nor already present
+    for dest_name, attr, flag in _ROMS:
+        source = getattr(args, attr)
+        if source is not None and not source.is_file():
+            parser.error(f"{flag} {source} not found")
+        if source is None and not (target / dest_name).is_file():
+            parser.error(f"{dest_name} is not in the target; pass {flag}")
 
     usdasm = _resolve_source("usdasm", args.usdasm, "USDASM_DIR")
     jpdasm = _resolve_source("jpdasm", args.jpdasm, "JPDASM_DIR")
 
-    print(f"==> generating the English program -> {target}")
+    print(f"==> generating a patched jpdasm -> {target}")
+    target.mkdir(parents=True, exist_ok=True)
+    _populate_from_jpdasm(jpdasm, target)
     english = build(
         usdasm=usdasm,
         jpdasm=jpdasm,
@@ -174,6 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("==> deploying build tooling")
     _deploy_tooling(target)
     _update_gitignore(target)
+    _place_roms(target, args)
 
     if args.verify:
         print("==> verifying base edits")
@@ -181,7 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
 
     print(
-        f"done. In {target}: place alttp.sfc + alttp-us.sfc, run "
-        "`python3 binextract.py`, then `./build_english_rom.sh`."
+        f"done. In {target}: run `python3 binextract.py`, "
+        "then `./build_english_rom.sh`."
     )
     return 0

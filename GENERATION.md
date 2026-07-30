@@ -11,15 +11,16 @@ diff of the base-assembly changes.
 * **This repo (patcher)** — the `alttp_jp_english_patcher` Python package: the
   generator toolkit plus the `deploy/` files it drops into the target. The
   `alttp-jp-english-patcher` console command runs it.
-* **The target (jpdasm fork)** — a clean fork of upstream `jpdasm`. After the
-  command it is a functional English translation: the base banks hooked in
+* **The target (`--target` output directory)** — a generated jpdasm fork. After
+  the command it is a functional English translation: the base banks hooked in
   place, the graft's expanded-ROM banks `bank_20.asm` .. `bank_2E.asm` sitting
-  beside them, a patched `main.asm`, and the build tooling. None of this
-  generator is copied into it.
+  beside them, a patched `main.asm`, the JP disassembly's support files, and the
+  build tooling. None of this generator is copied into it.
 
-The target never needs a separate pristine reference: the command clones one
-into the user cache and uses it as the hook source, so the target's banks are
-always derived from a known-pristine base.
+The hook source is always a freshly-cloned **pristine** `jpdasm` (in the user
+cache), never the target itself. The target is populated from that pristine copy
+each run, so the base banks are always derived from a known-pristine base and
+re-running is safe (it never hooks an already-hooked bank).
 
 ## What is produced
 
@@ -38,9 +39,11 @@ following the disassembly's own convention -- so the fork reads `bank_00` ..
 | `bank_26.asm` (US graphics sheets) | `generate.py` | `usdasm` (via incbin) |
 | `bank_27.asm` (file-select palette) | `generate.py` | `usdasm` (via incbin) |
 | `main.asm` includes + 2 MB padding | `generate.py` | — |
-| the untouched base banks + support files | `generate.py` | `jpdasm` (round-tripped) |
+| the untouched base banks + `main`/`functions`/`registers` | `generate.py` | `jpdasm` (round-tripped) |
+| `asarmon.exe`, reference `.asm`, `bin/` dirs, `Makefile`, `LICENSE`; `binextract.py` → `binextract-jp.py` | copied | `jpdasm` (pristine) |
 | `.gitignore` binary excludes | `gitignore.py` | — |
-| `binextract-jp.py` (renamed), `binextract-us.py`, `binextract.py` stub, `build_english_rom.sh`, `README.md` | deployed | — |
+| `binextract-us.py`, `binextract.py` stub, `build_english_rom.sh`, `README.md` | deployed | — |
+| `alttp.sfc` / `alttp-us.sfc` | copied | `--jp-rom` / `--us-rom` |
 
 `generate.py` does it all in one pass: it loads the pristine JP disassembly as
 a single whole-program `Rom`, folds every relocated subsystem into it (each a
@@ -86,34 +89,43 @@ stub the deploy drops in.
 
 * `uv` (installs the package + its dependencies, including the parser library).
 * `git` (the command clones the disassembly sources it reads).
-* Two ROMs you own (only needed to build / extract assets on the target, not to
-  deploy):
+* Two ROMs you own (copied into the target as `alttp.sfc` / `alttp-us.sfc`):
   * JP 1.0 — md5 `03a63945398191337e896e5771f77173`
   * US — md5 `608c22b8ff930c62dc2de54bcd6eba72`
 
 The command clones `usdasm` (spannerisms, `main`) and `jpdasm` (spannerisms,
-`master`) into the user cache if missing. Override either with `--usdasm` /
-`--jpdasm` or `USDASM_DIR` / `JPDASM_DIR` (point at an existing checkout).
+`master`) into the platformdirs user cache if missing (on Linux,
+`~/.cache/alttp-jp-english-patcher/{usdasm,jpdasm}`). Override either with
+`--usdasm` / `--jpdasm` or `USDASM_DIR` / `JPDASM_DIR` (point at an existing
+checkout).
+
+The `--target` is an *output directory*: created if missing, and the files the
+run produces are overwritten if it exists (your ROMs, extracted binaries, and
+built ROM are left alone). It is populated fresh from the pristine `jpdasm` each
+run, so re-running is safe and predictable -- the target is never used as its
+own hook source.
 
 ## Running it
 
 ```bash
 uv sync                                           # once
 
-# Deploy the graft into the fork:
-uv run alttp-jp-english-patcher --target /path/to/jpdasm-fork
+# Generate the patched jpdasm (ROMs copied in as alttp.sfc / alttp-us.sfc):
+uv run alttp-jp-english-patcher --target ./alttp-jp-english \
+    --jp-rom JP1.0.sfc --us-rom US.sfc
 
-# Baseline: deploy the change-free form (no base hooks, baseline graft banks):
-uv run alttp-jp-english-patcher --target /path/to/jpdasm-fork --baseline
+# Baseline: the change-free form (no base hooks, baseline graft banks):
+uv run alttp-jp-english-patcher --target ./alttp-jp-english --baseline \
+    --jp-rom JP1.0.sfc --us-rom US.sfc
 
-# Add --verify to run the base-edit regression check after deploying.
+# --jp-rom / --us-rom may be omitted once the ROMs are already in the target.
+# Add --verify to run the base-edit regression check after generating.
 ```
 
-Then extract the ROM binaries and build on the target:
+Then extract the ROM binaries and build in the target:
 
 ```bash
-cd /path/to/jpdasm-fork
-cp JP1.0.sfc alttp.sfc && cp US.sfc alttp-us.sfc
+cd ./alttp-jp-english
 python3 binextract.py
 ./build_english_rom.sh                            # -> alttp_english.sfc
 ```
@@ -124,14 +136,17 @@ To show a reviewer **only** the surgical base-assembly changes — the
 function-repointing hooks — cleanly separated from the bulk of relocated code,
 make two commits on the target and diff them.
 
-1. **Baseline commit** — everything deployed, base banks left pristine:
+1. **Baseline commit** — everything generated, base banks left pristine (pass
+   the ROMs once; they are gitignored, so they never enter a commit):
 
    ```bash
-   uv run alttp-jp-english-patcher --target FORK --baseline
+   uv run alttp-jp-english-patcher --target FORK --baseline \
+       --jp-rom JP1.0.sfc --us-rom US.sfc
    cd FORK && git add -A && git commit -m "English graft: generated code (baseline, no base edits)"
    ```
 
-2. **Changes commit** — the hooks applied, on a new branch:
+2. **Changes commit** — the hooks applied, on a new branch (ROMs already in the
+   target, so no `--jp-rom` / `--us-rom` needed):
 
    ```bash
    git checkout -b english-base-edits
