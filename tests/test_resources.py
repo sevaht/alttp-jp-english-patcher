@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from importlib import resources
 
-from snes_assembly_parser import Assembly
-
 from alttp_jp_english_patcher.generate import _save_migration_lines
+from alttp_jp_english_patcher.snes_assembly_parser import Assembly
 from alttp_jp_english_patcher.verify_base import BASE_BANKS, _reference_text
 
 
@@ -34,3 +33,19 @@ def test_deploy_files_are_bundled() -> None:
         "README.md",
     ):
         assert root.joinpath(name).is_file()
+
+
+def test_ensure_anchors_labels_bare_lines_with_pc() -> None:
+    # ensure_anchors gives label-less instruction/data lines the #_<hex>
+    # per-line address labels the disassembly convention wants; render(org)
+    # re-stamps them to the running PC (advancing by each line's size).
+    asm = Assembly.from_content(
+        ["Foo:", "PHY", "JSR Bar", ".sub", "dw $0000, $0001"]
+    )
+    rendered = asm.ensure_anchors().render(0x2C8000).splitlines()
+    joined = "\n".join(rendered)
+    assert "#_2C8000: PHY" in joined  # 1 byte
+    assert "#_2C8001: JSR Bar" in joined  # +3 bytes
+    assert "#_2C8004: dw $0000, $0001" in joined  # .sub is size 0
+    assert "Foo:" in rendered  # top-level label untouched
+    assert ".sub" in rendered  # sublabel untouched

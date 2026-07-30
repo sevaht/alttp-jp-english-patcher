@@ -26,17 +26,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "snes-assembly-parser",
     "platformdirs>=4.10.0",
 ]
 
 [project.scripts]
 alttp-jp-english-patcher = "alttp_jp_english_patcher.__main__:main"
-
-# snes-assembly-parser is not on PyPI yet; resolve it from git for local dev
-# (uv sync). Remove this once it is published.
-[tool.uv.sources]
-snes-assembly-parser = {git = "https://github.com/nacitar/snes-assembly-parser.git", branch = "main"}
 
 [dependency-groups]
 dev = [
@@ -102,6 +96,12 @@ select = [
 "checks" = ["S603"]
 "tests/**/*" = ["PLR2004", "S101"]
 
+# The vendored snes_assembly_parser exports a broad public API this package only
+# partly uses, so vulture (only) skips it -- it has its own dead-code gate
+# upstream. It is still formatted/linted/type-checked like the rest of the repo.
 [tool.vulture]
 min_confidence = 70
-exclude = ["src/alttp_jp_english_patcher/deploy/"]
+exclude = [
+    "src/alttp_jp_english_patcher/deploy/",
+    "src/alttp_jp_english_patcher/snes_assembly_parser/",
+]

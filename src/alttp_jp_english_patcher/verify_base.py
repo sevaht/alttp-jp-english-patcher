@@ -21,9 +21,8 @@ import tempfile
 from importlib import resources
 from pathlib import Path
 
-from snes_assembly_parser import Assembly
-
 from .generate import build
+from .snes_assembly_parser import Assembly
 
 # The frozen reference is an embedded package resource: read via
 # importlib.resources; --freeze writes back to the source file (only meaningful

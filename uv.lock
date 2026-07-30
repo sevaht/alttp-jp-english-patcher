@@ -11,7 +11,6 @@ name = "alttp-jp-english-patcher"
 source = { editable = "." }
 dependencies = [
     { name = "platformdirs" },
-    { name = "snes-assembly-parser" },
 ]
 
 [package.dev-dependencies]
@@ -26,10 +25,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "platformdirs", specifier = ">=4.10.0" },
-    { name = "snes-assembly-parser", git = "https://github.com/nacitar/snes-assembly-parser.git?branch=main" },
-]
+requires-dist = [{ name = "platformdirs", specifier = ">=4.10.0" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -556,11 +552,11 @@ wheels = [
 
 [[package]]
 name = "platformdirs"
-version = "4.10.1"
+version = "4.11.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/52/cd/4f25b2f95b23f5d2c9c1fe43e49841bff5800562149b2666afc09309aa8f/platformdirs-4.10.1.tar.gz", hash = "sha256:ceab4084426fe6319ce18e86deada8ab1b7487c7aee7040c55e277c9ae793695", size = 31678, upload-time = "2026-07-18T03:53:43.808Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/78/9b/560e4be8e26f6fd133a03630a8df0c663b9e8d61b4ade152b72005aec83b/platformdirs-4.11.0.tar.gz", hash = "sha256:0555d18370482847566ffabcaa53ad7c6c1c29f195989ae1ed634a05f76ea1e0", size = 31953, upload-time = "2026-07-21T13:09:36.565Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ec/73/6fd0bb9ce84138c3857f12e9de63bc901852975a092d545f18087a204aa2/platformdirs-4.10.1-py3-none-any.whl", hash = "sha256:0e4eff26be2d75293977f7cddc153fd9b8eaa7fb0c7b64ffe4076cb443117443", size = 22906, upload-time = "2026-07-18T03:53:42.576Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/68/d8d58938dfb1370b266a1a729e6d77a985be23689a0496498ee17b2cbf90/platformdirs-4.11.0-py3-none-any.whl", hash = "sha256:360ccded2b7fce0af0ff80cc8f5942a1c5d99b0e856033acb030bfc634709e74", size = 23247, upload-time = "2026-07-21T13:09:35.422Z" },
 ]
 
 [[package]]
@@ -752,23 +748,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/46/f5af3402b579fd5e11573ce652019a67074317e18c1935cc0b4ba9b35552/secretstorage-3.5.0-py3-none-any.whl", hash = "sha256:0ce65888c0725fcb2c5bc0fdb8e5438eece02c523557ea40ce0703c266248137", size = 15554, upload-time = "2025-11-23T19:02:51.545Z" },
-]
-
-[[package]]
-name = "sevaht-utility"
-version = "1.0.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/36/41/e27f8d336c5222c8c9fcca017b18b9e7b48f39463f85b4e289d0c59599d0/sevaht_utility-1.0.2.tar.gz", hash = "sha256:cb8747866820c1b3d0309513670bb0d975dce920d4d80a10b3b5b417fdc56845", size = 23900, upload-time = "2026-06-24T04:59:07.103Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3c/82/1a4ceffc32b82e86411701343c70bc5f651cd85d5d1be1a18a804263fe64/sevaht_utility-1.0.2-py3-none-any.whl", hash = "sha256:435b8a14afba37d39eea620219ec66521e7be091754212f26c63af108100a85e", size = 19451, upload-time = "2026-06-24T04:59:05.778Z" },
-]
-
-[[package]]
-name = "snes-assembly-parser"
-version = "0.0.0.dev18+g1f63a8a66"
-source = { git = "https://github.com/nacitar/snes-assembly-parser.git?branch=main#1f63a8a669e1626d50faf7974a4fa24b405850c0" }
-dependencies = [
-    { name = "sevaht-utility" },
 ]
 
 [[package]]

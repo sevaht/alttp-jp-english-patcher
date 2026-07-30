@@ -18,10 +18,8 @@ the English graft, the one a generator reaches for being:
 * :func:`substitute` -- an assertive multi-line text edit (for comment/caption
   rewrites a single-``Line`` edit can't express).
 
-The library is imported as a plain package (``snes_assembly_parser``); its
-``application``/``__main__`` modules -- the only ones with a third-party
-dependency -- are never touched, so a bare checkout on ``PYTHONPATH`` is enough
-(see ``generate.sh``).
+The library is vendored into this package as ``.snes_assembly_parser`` (its
+standalone CLI is not vendored, only the importable API).
 """
 
 from __future__ import annotations
@@ -31,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from snes_assembly_parser import Assembly
+    from .snes_assembly_parser import Assembly
 
 #: US -> English address offset (+$20 banks, i.e. +2 MB / 0x200000).
 MIRROR = 0x200000

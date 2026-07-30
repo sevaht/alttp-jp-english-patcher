@@ -26,7 +26,8 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
-from snes_assembly_parser import (
+from .graft import Relocation, bank_header, mirror, require_start, substitute
+from .snes_assembly_parser import (
     Assembly,
     Block,
     Edit,
@@ -40,8 +41,6 @@ from snes_assembly_parser import (
     note,
     notes,
 )
-
-from .graft import Relocation, bank_header, mirror, require_start, substitute
 
 USDASM = Path("../usdasm")
 JPDASM = Path("../jpdasm")
@@ -691,7 +690,11 @@ def file_select(
     if changes:  # IRQ handler built from a sublabel, not a top-level block
         lines += build_irq_handler().lines
     if migrate:  # the save migrator, called at boot from bank_00 (see build)
-        lines += Assembly.from_content(_save_migration_lines()).lines
+        # ensure_anchors gives the hand-written asm the #_<hex> per-line labels
+        # the disassembly convention wants; render re-stamps them to real
+        # addresses when the bank is emitted.
+        migration = Assembly.from_content(_save_migration_lines())
+        lines += migration.ensure_anchors().lines
     # The entry points are the hooks; the whole recursive closure is what
     # relocates, so the one same-bank caller (a BRL inside FileSelect_
     # HandleInput, itself relocated) moves along -> every hook is an alias.
