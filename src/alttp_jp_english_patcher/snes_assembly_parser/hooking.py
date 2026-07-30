@@ -79,9 +79,12 @@ def byte_rows(address: int, values: list[int], per_row: int = 8) -> list[Line]:
     for offset in range(0, len(values), per_row):
         chunk = values[offset : offset + per_row]
         body = ", ".join(f"${value:02X}" for value in chunk)
-        rows.append(
-            Line.from_line(f"{anchor_label(address + offset)}: db {body}")
-        )
+        line = Line.from_line(f"{anchor_label(address + offset)}: db {body}")
+        # A ``db`` row's size is just its byte count; set it so the row is
+        # correct even when rendered straight into a placed Assembly (where
+        # render reads .size rather than recomputing it via a later resize).
+        line.size = len(chunk)
+        rows.append(line)
     return rows
 
 

@@ -37,6 +37,7 @@ from .snes_assembly_parser import (
     Rom,
     datas,
     dbr_trampolines,
+    free_block,
     instructions,
     note,
     notes,
@@ -128,76 +129,74 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
         # file_select), so the stock US 6-char handler works; just repoint its
         # read.
         name_field: list[Edit] = [("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)]
-        # (2) repoints RenderText_Choose2HighOr3's two cursor prompts to the
-        # copies re-appended below.
+        # (2) message-ID realignment, done in the ENGINE instead of the data.
+        # The US has two messages JP lacks -- the Choose2High cursor prompts at
+        # IDs $0B/$0C -- so every later message's US ID is JP's + 2. Rather
+        # than delete them (which physically moves every byte of the data,
+        # exploding the bank_22/bank_23 diff), teach CreateMessagePointers to
+        # hand those two the out-of-range IDs $18B/$18C as it assigns IDs, so
+        # every real message keeps its JP ID while the data stays byte-for-byte
+        # the US layout. Only RenderText_Choose2HighOr3 references the two
+        # (repointed below); without the redirect a 2-option "high" prompt
+        # (e.g. the Great Fairy upgrade) would load whatever sits at ID $0B.
+        engine.insert_after(
+            "#_0ED3F9:",  # LDX #$0000 -- the table-index / ID-counter init
+            instructions(
+                [
+                    "LDA.w #$0002 ; [ENG-TEXT] US-only msgs to give high IDs",
+                    "STA.b $04    ; ($0B/$0C: the Choose2High cursor prompts)",
+                    "LDA.w #$04A1 ; first high slot -> ID $18B ($18B * 3)",
+                    "STA.b $06",
+                ]
+            ),
+        )
+        engine.insert_before(
+            "#_0ED3FC:",  # the per-message store, right past .next_message
+            [
+                *instructions(
+                    [
+                        "CPX.w #$0021 ; [ENG-TEXT] slot for ID $0B, where the",
+                        "BNE .store   ; two US-only prompts fall...",
+                        "LDA.b $04    ; ...divert them to $18B/$18C, then let",
+                        "BEQ .store   ; the real msg $0B take this slot",
+                        "PHX",
+                        "LDX.b $06        ; the $18B/$18C table slot",
+                        "LDA.b $00",
+                        "STA.l $7F71C0,X",
+                        "LDA.b $01",
+                        "STA.l $7F71C1,X",
+                        "PLX              ; keep the real ID index put",
+                        "LDA.b $06",
+                        "CLC",
+                        "ADC.w #$0003     ; next high slot",
+                        "STA.b $06",
+                        "DEC.b $04",
+                        "BRA .next_byte   ; walk msg; don't consume an ID",
+                    ]
+                ),
+                Line.from_line(".store"),
+            ],
+        )
+        # (3) repoint RenderText_Choose2HighOr3's two cursor prompts to the
+        # high IDs the engine now assigns them.
         engine_edits: dict[str, list[Edit]] = {
             "ParseText_WritePlayerName": name_field,
             "RenderText_Choose2HighOr3": [
                 (
                     "dw $000B",
-                    "dw $018B    ; [ENG-TEXT] was $000B ->"
-                    " Message_Choose2High_opt1",
+                    "dw $018B    ; [ENG-TEXT] cursor prompt 1"
+                    " (see CreateMessagePointers)",
                     1,
                 ),
-                (
-                    "dw $000C",
-                    "dw $018C    ; [ENG-TEXT] was $000C ->"
-                    " Message_Choose2High_opt2",
-                    1,
-                ),
+                ("dw $000C", "dw $018C    ; [ENG-TEXT] cursor prompt 2", 1),
             ],
         }
         engine.apply_edit_table(engine_edits)
-        # (3) message IDs: drop US-only 000B/000C so IDs match JP, then
-        # re-append those two Choose2High cursor prompts past JP's ID range
-        # (395=$18B, 396=$18C), terminated by $FF (the marker
-        # CreateMessagePointers scans for). The bytes ARE the US 000B/000C
-        # blocks, pulled and relabelled -- not hand-transcribed.
-        opt1 = main.block("Message_000B")
-        opt1.replace(
-            "Message_000B:",
-            "Message_Choose2High_opt1:  ; ID $018B (395), cursor line 2",
-            1,
-        )
-        opt2 = main.block("Message_000C")
-        opt2.replace(
-            "Message_000C:",
-            "Message_Choose2High_opt2:  ; ID $018C (396), cursor line 3",
-            1,
-        )
-        main.delete_block("Message_000B")
-        main.delete_block("Message_000C")
-        overflow.append(
-            notes(
-                [
-                    ";" + "=" * 99,
-                    "; [ENG-TEXT] Restored Choose2High cursor-prompt",
-                    "; messages (US Message_000B/000C). The ID realign drops",
-                    "; US-only 000B/000C so message IDs match JP, but the US",
-                    "; engine's RenderText_Choose2HighOr3 references them by",
-                    "; ID for the selection cursor. Re-appended at the next",
-                    "; free IDs (past JP's 0-394). Without this a 2-option",
-                    "; 'high' prompt (e.g. the Great Fairy upgrade) loaded",
-                    "; whatever now sits at ID $000B as glitch text.",
-                ]
-            )
-            + opt1.lines
-            + notes([""])
-            + opt2.lines
-            + notes([""])
-            + datas(
-                [
-                    "db $FF ; end of message table "
-                    "(CreateMessagePointers terminator)"
-                ]
-            )
-        )
+        engine.ensure_anchors()  # anchor the hand-written inserted lines
 
     engine_org = mirror(require_start(engine))  # $0EC440 -> $2EC440
     engine_text = engine.render(engine_org)
-    overflow_note = "MESSAGE overflow (US bank_0E)" + (
-        " + re-appended cursor prompts." if changes else "."
-    )
+    overflow_note = "MESSAGE overflow (US bank_0E)."
 
     # Every JP name this subsystem intercepts (freed in the base): the first
     # three claim a bare alias in the relocated engine; the last two are the
@@ -386,11 +385,13 @@ def credits_bank(sources: Sources, *, changes: bool) -> Relocation:
 
 
 def item_menu(sources: Sources, *, changes: bool) -> Relocation:
-    """Bank ``$2D``: the US item menu, mirror-placed. Four entry routines get a
-    DBR-setting trampoline (their bodies become ``<name>_body`` and return
-    long);
-    the name-text tables get the US content, with the 2-row US ``Mirror`` table
-    duplicated to JP's 4-row slot (cascading the rest forward $20 bytes).
+    """Bank ``$2D``: the US item menu, mirror-placed. Four entry routines get
+    a DBR-setting trampoline (their bodies become ``<name>_body`` and return
+    long); the name-text tables get the US content, with the 2-row US
+    ``Mirror`` table filling JP's 4-row slot -- reserved in BOTH builds
+    (real copies in full, same-size labelled padding in the baseline) so the
+    tables after it -- and ``MenuCursorPositions`` (always ``+$20``) -- keep a
+    stable address and don't cascade in the baseline<->full review diff.
     """
     us, jp = sources.us, sources.jp
     entries = (
@@ -449,9 +450,12 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
             body.lines[0].label = en_name  # rename the routine label
         place(body, mirror(require_start(body)))
 
-    def duplicate_mirror_rows(region: Assembly) -> None:
-        # US ItemMenuNameText_Mirror is 2 dw rows; the JP slot wants 4, so copy
-        # the 2 rows once more (byte-for-byte, cascading the rest $20 forward).
+    def expand_mirror_slot(region: Assembly) -> None:
+        # US ItemMenuNameText_Mirror is 2 dw rows; JP's slot wants 4. Fill the
+        # extra 2-row ($20) span in BOTH builds -- the real US rows duplicated
+        # (full), or same-size labelled padding (baseline) -- so the tables
+        # after Mirror (and MenuCursorPositions) keep their +$20 slot in either
+        # build and never cascade in the review diff.
         start = next(
             index
             for index, line in enumerate(region.lines)
@@ -468,10 +472,25 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
         if len(rows) != 2:  # noqa: PLR2004
             msg = f"Mirror: expected 2 US rows, found {len(rows)}"
             raise ValueError(msg)
-        copies = [Line.from_line(str(row)) for row in rows]
-        for copy, src in zip(copies, rows, strict=True):
-            copy.size = src.size
-        region.lines[end:end] = copies
+        if changes:
+            fill = [Line.from_line(str(row)) for row in rows]
+            for copy, src in zip(fill, rows, strict=True):
+                copy.size = src.size
+        else:
+            fill = notes(
+                [
+                    "; [ENG-ITEM] reserved: JP's Mirror slot is 4 rows (US",
+                    "; has 2); the full build fills these with the copies.",
+                ]
+            ) + datas(
+                [
+                    "dw "
+                    + ", ".join(["$FFFF"] * (row.size // 2))
+                    + " ; reserved"
+                    for row in rows
+                ]
+            )
+        region.lines[end:end] = fill
 
     def restore_ability_jp_rows(region: Assembly) -> None:
         # Rows 10-11 of AbilityText keep the JP tile values (not US).
@@ -494,29 +513,27 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
                 row += 1
 
     region = us.concat([*name_text])
+    expand_mirror_slot(region)  # both builds: real copies (full) or padding
     if changes:
-        region.apply_edit_table(
-            {
-                "ItemMenuNameText_Mirror": [duplicate_mirror_rows],
-                "AbilityText": [restore_ability_jp_rows],
-            }
-        )
+        region.apply_edit_table({"AbilityText": [restore_ability_jp_rows]})
     place(region, mirror(require_start(region)))
 
     cursor = us.block("MenuCursorPositions", comments=False)
-    # Cursor positions follow the Mirror table, which grew by $20 (2 rows).
-    place(cursor, mirror(require_start(cursor)) + (0x20 if changes else 0))
+    # Cursor positions follow the Mirror table, whose 4-row slot is reserved in
+    # both builds, so the cursor always sits $20 past its US mirror.
+    place(cursor, mirror(require_start(cursor)) + 0x20)
     return relocation
 
 
 def file_select(
     sources: Sources, *, changes: bool, save_compat: bool
 ) -> Relocation:
-    """Bank ``$2C``: the US file-select / copy / erase / name-entry, packed
-    contiguously from ``$2C8000`` (two JP-restored save routines are too big
-    for
-    their US slots to mirror-place). Pulled whole by recursion from the entry
-    points; a few come from JP for the dual-save backup the US dropped.
+    """Bank ``$2C``: the US file-select / copy / erase / name-entry. Pulled
+    whole by recursion from the entry points; a few come from JP for the
+    dual-save backup the US dropped. US-sourced routines are mirror-placed at
+    their US address + $200000 (stable, recognisable addresses); the JP
+    restorations -- too big for their US slots -- plus the IRQ handler and save
+    migrator pack into the free bottom of the bank, all gaps labelled NULL_.
     """
     us, jp = sources.us, sources.jp
     # The entry points -- every symbol un-relocated code reaches this subsystem
@@ -649,63 +666,181 @@ def file_select(
     # it runs before InitializeMemoryAndSRAM's $3E1 sanity zeroing.
     migrate = changes and save_compat
     if migrate:
+        # Tag freshly-created files as ours -- byte-neutrally, so
+        # InitializeSaveFile keeps its size and its US mirror slot. The $55AA
+        # marker's own `STA.l $7003E1,X` (4 bytes) is swapped for a `JSL
+        # StampNewFileTag` (also 4 bytes); the stub (built in the tail below)
+        # writes the marker AND our $410 tag, then RTLs.
+        edits["InitializeSaveFile"].append(
+            ("STA.l $7003E1,X", "JSL StampNewFileTag", 1)
+        )
 
-        def tag_new_file(block: Assembly) -> None:
-            # tag freshly-created files ours, beside the $55AA marker write.
-            block.insert_after(
-                "STA.l $7003E1,X",
-                instructions(["LDA.w #$0006", "STA.l $700410,X"]),
-            )
+    def stamp_new_file_stub() -> list[Line]:
+        return notes(
+            [
+                ";" + "=" * 99,
+                "; [ENG-FS] New-file format tag, out-of-line so",
+                "; InitializeSaveFile stays byte-neutral (a JSL replaces its",
+                "; $55AA-marker STA -- same 4 bytes). A holds $55AA on entry.",
+                "StampNewFileTag:",
+            ]
+        ) + instructions(
+            [
+                "STA.l $7003E1,X    ; the $55AA marker (A still = $55AA)",
+                "LDA.w #$0006",
+                "STA.l $700410,X    ; our-format tag",
+                "RTL",
+            ]
+        )
 
-        edits["InitializeSaveFile"].append(tag_new_file)
-
-    # This subsystem is PACKED contiguously at $2C8000, not mirror-placed (two
-    # JP save-backup routines are too big to mirror). Packing reassigns
-    # absolute addresses, so blocks are emitted in US source order to keep the
-    # few fall-through routines beside their successor.
-    # Intro_SetStripesAndAdvance is a US #-label the single-unit closure cannot
-    # reach, so it is named explicitly and pulled from US like the rest. The
-    # relocated code JSRs it in every build (baseline included), so pull it
-    # unconditionally -- otherwise the baseline has a dangling reference and
-    # won't assemble.
+    # ---- placement: mirror the US routines, pack the JP restorations low ----
+    # Bank $2C is the +$200000 mirror of US bank $0C, where every routine we
+    # pull originates. US-sourced routines are MIRROR-placed at their US
+    # address + $200000, so each keeps a stable, source-recognisable address
+    # and a byte-neutral edit never renumbers its neighbours (a clean
+    # baseline<->full diff). The JP restorations are BIGGER than the US slots
+    # they'd occupy (that is why they were pulled), so they cannot sit in the
+    # US layout; they -- plus the CopyFile_FindFileIndices stub that falls into
+    # KILLFile_FindFileIndices, and the IRQ handler + save migrator -- pack
+    # into the free bottom of the bank ($2C8000..). Every gap is a labelled
+    # NULL_ free-ROM block (the disassembly convention we owe the expanded
+    # banks).
     reachable = us.closure(sorted(hooks), recursive=True)
+    carried = frozenset(entry.name for entry in reachable)
     packed_blocks = list(
         dict.fromkeys(
             entry.name for entry in reachable if isinstance(entry, Block)
         )
     )
+    # Intro_SetStripesAndAdvance is a US #-label the closure cannot reach; the
+    # relocated code JSRs it in every build (baseline included), so pull it
+    # explicitly or the baseline has a dangling reference and won't assemble.
     packed_blocks += ["Intro_SetStripesAndAdvance"]
 
-    lines = []
-    for name in packed_blocks:
-        # US/JP block (pool before routine) with its byte-neutral edits from
-        # the table above applied.
-        origin = jp if name in jp_blocks else us
-        seg_lines = []
-        if name in origin.pool_names:
-            seg_lines += origin.pool(name, comments=False).lines
-        seg_lines += origin.block(name, comments=False).lines
-        segment = Assembly(seg_lines)
-        if changes:
-            segment.apply_edits(edits.get(name, []))
-        lines += segment.lines
-    if changes:  # IRQ handler built from a sublabel, not a top-level block
-        lines += build_irq_handler().lines
-    if migrate:  # the save migrator, called at boot from bank_00 (see build)
-        # ensure_anchors gives the hand-written asm the #_<hex> per-line labels
-        # the disassembly convention wants; render re-stamps them to real
-        # addresses when the bank is emitted.
-        migration = Assembly.from_content(_save_migration_lines())
-        lines += migration.ensure_anchors().lines
-    # The entry points are the hooks; the whole recursive closure is what
-    # relocates, so the one same-bank caller (a BRL inside FileSelect_
-    # HandleInput, itself relocated) moves along -> every hook is an alias.
-    relocation = Relocation(
-        hooked=tuple(sorted(hooks)),
-        carried=frozenset(entry.name for entry in reachable),
-        changes=changes,
+    # The routines that CANNOT mirror-place (JP restorations bigger than their
+    # US slot). This is also the pack order; the CopyFile_FindFileIndices /
+    # KILLFile_FindFileIndices pair must stay adjacent (the former sets A=$07
+    # and falls straight into the latter).
+    # InitializeSaveFile is NOT here: a short BNE in NameFile_DoTheNaming pins
+    # it to the US layout, so it stays mirror-placed (it fits the US slot
+    # exactly, and its tag edit is byte-neutral -- see StampNewFileTag).
+    low_names = [
+        "FileSelect_InitializeGFX",
+        "CopyFile_FindFileIndices",
+        "KILLFile_FindFileIndices",
+        "NameFile_EraseSave",
+        "IntroLogoTilemap",
+    ]
+    low_set = frozenset(low_names)
+    # The two low-region routines whose English edit grows them: reserve a
+    # fixed-size slot (a NULL_ gap sized identically in baseline and full)
+    # after each, so the growth never shifts what follows -- in either build.
+    growers = frozenset({"FileSelect_InitializeGFX", "NameFile_EraseSave"})
+    grower_headroom = (
+        16  # >= the largest growth (InitializeGFX +10, erase +11)
     )
-    relocation.place(Assembly(lines), 0x2C8000, "file-select, packed.")
+
+    def pull(name: str, *, edited: bool) -> Assembly:
+        # An asar pool is emitted inline just before its routine, so a pulled
+        # segment is (pool + block) and its first byte is the pool's, not the
+        # routine label's -- callers that need the placement address use
+        # require_start(), not address_of().
+        origin = jp if name in jp_blocks else us
+        seg: list[Line] = []
+        if name in origin.pool_names:
+            seg += origin.pool(name, comments=False).lines
+        seg += origin.block(name, comments=False).lines
+        asm = Assembly(seg)
+        if edited:
+            asm.apply_edits(edits.get(name, []))
+        return asm
+
+    def width(asm: Assembly) -> int:
+        return sum(line.size for line in asm.lines)
+
+    # Packed low region, from the bank base.
+    low_org = 0x2C8000
+    low: list[Line] = []
+    pc = low_org
+    for name in low_names:
+        start = pc
+        body = pull(name, edited=changes)
+        low += body.lines
+        pc += width(body)
+        if name in growers:
+            # slot = unedited width + headroom, the SAME in both builds; the
+            # filler shrinks by exactly the edit's growth in the full build.
+            slot_end = (
+                start + width(pull(name, edited=False)) + grower_headroom
+            )
+            low += free_block(pc, slot_end - pc)
+            pc = slot_end
+    # NB: the IRQ handler + save migrator are appended AFTER the US region
+    # (see `tail` below), not here -- keeping the low region (and thus the big
+    # bridge NULL_) byte-identical between baseline and full.
+    low_end = low_org + sum(line.size for line in low)
+
+    # Routines mirror-placed at their US address + $200000, ascending order,
+    # with a labelled NULL_ gap bridging the unpulled space between them. A
+    # US-sourced segment keys on its own first byte (an inline pool precedes
+    # the routine); a JP restoration kept here (InitializeSaveFile) takes its
+    # US-equivalent slot instead of its own JP mirror.
+    def us_place(name: str, seg: Assembly) -> int:
+        if name in jp_blocks:
+            return mirror(us.address_of(name))
+        return mirror(require_start(seg))
+
+    us_segs = [
+        (us_place(name, seg), name, seg)
+        for name in packed_blocks
+        if name not in low_set
+        for seg in [pull(name, edited=changes)]
+    ]
+    us_segs.sort(key=lambda item: item[0])
+    us_region: list[Line] = []
+    first_mirror = us_segs[0][0]
+    pc = first_mirror
+    for target, name, seg in us_segs:
+        if target < pc:
+            msg = f"file_select: US mirror overlap at {name}"
+            raise ValueError(msg)
+        if target > pc:
+            us_region += free_block(pc, target - pc)
+            pc = target
+        us_region += seg.lines
+        pc += width(seg)
+
+    # New code JP has no home for: the name-entry IRQ handler and the save
+    # migrator (both reached by label from bank_00). Appended after the US
+    # region so their full-only presence never shifts the low region or the
+    # mirrored routines -- it lands in the free tail instead.
+    tail: list[Line] = []
+    if changes:  # IRQ handler built from a sublabel, not a top-level block
+        tail += build_irq_handler().lines
+    if migrate:
+        tail += stamp_new_file_stub()  # InitializeSaveFile's byte-neutral tag
+        # ensure_anchors gives the hand-written asm the #_<hex> per-line labels
+        # the disassembly convention wants; render re-stamps them at emit time.
+        tail += (
+            Assembly.from_content(_save_migration_lines())
+            .ensure_anchors()
+            .lines
+        )
+
+    if first_mirror < low_end:
+        msg = "file_select: low region overruns the US mirror start"
+        raise ValueError(msg)
+    bank = low + free_block(low_end, first_mirror - low_end) + us_region + tail
+
+    relocation = Relocation(
+        hooked=tuple(sorted(hooks)), carried=carried, changes=changes
+    )
+    relocation.place(
+        Assembly(bank),
+        low_org,
+        "file-select: US routines mirror-placed; JP restorations packed low, "
+        "IRQ handler + save migrator in the tail.",
+    )
     return relocation
 
 

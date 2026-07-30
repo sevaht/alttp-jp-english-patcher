@@ -24,7 +24,7 @@ from .assembly import (
     note,
     notes,
 )
-from .hooking import LandingPad
+from .hooking import LandingPad, free_block
 from .patcher import Patcher
 from .rom import Caller, Rom
 from .segment import Segment, code, code_lines
@@ -70,6 +70,7 @@ __all__ = [
     "data_size",
     "datas",
     "dbr_trampolines",
+    "free_block",
     "instruction",
     "instruction_shape",
     "instructions",

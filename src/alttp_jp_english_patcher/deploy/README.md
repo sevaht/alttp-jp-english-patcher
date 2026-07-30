@@ -42,7 +42,7 @@ python3 binextract.py          # extract bin/* (JP) and english/* (US)
 ```
 
 On Windows, run `binextract.py`, then `_build.bat` (or `make`). A correct
-default build has MD5 `c94b73db14700a25f1be8c1ff003119a`.
+default build has MD5 `e7fefa0fefb39f354a9005838af6a6dd`.
 
 ## Binaries
 
