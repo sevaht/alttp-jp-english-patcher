@@ -10,3 +10,9 @@ __pycache__/
 # ROMs and build artifacts must never live here.
 *.sfc
 *.srm
+alttp.sfc
+alttp-us.sfc
+
+# Local convenience scripts (personal target paths, not part of the package).
+patch-baseline.sh
+patch-full.sh

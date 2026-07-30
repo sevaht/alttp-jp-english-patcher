@@ -12,6 +12,18 @@ ROM to 2 MB. It carries a boot-time save migrator, so US and vanilla-Japanese
 save files are converted to this build's format automatically the first time you
 load them.
 
+### Save-file names
+
+When a foreign save is migrated, its player name is handled by what the two
+fonts can actually show:
+
+* **US saves** — the name is kept as-is (the English font already covers it).
+* **Japanese saves** — the name is kept only if it is made up **entirely of
+  uppercase Latin letters** (`A`–`Z`, the sole characters both the Japanese and
+  English fonts share); those are remapped to this build's encoding. Any name
+  containing kana or other glyphs the English font can't render is replaced with
+  **`Link`**.
+
 ---
 
 ## Building
