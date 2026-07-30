@@ -5,12 +5,12 @@
 #
 #   1. place your two ROMs here:  alttp.sfc (JP 1.0)  and  alttp-us.sfc (US)
 #   2. python3 binextract.py       # extracts bin/* (JP) and english/* (US)
-#   3. ./build_english_rom.sh      # -> alttp_english.sfc
+#   3. ./build_english_rom.sh      # -> alttp-english.sfc
 #
 set -euo pipefail
 cd "$(dirname "$0")"
 
-OUT="${1:-alttp_english.sfc}"
+OUT="${1:-alttp-english.sfc}"
 
 # asarmon (the pooling Asar fork) is shipped in the repo as asarmon.exe; run it
 # natively if a Linux `asarmon` is on PATH, else through wine.

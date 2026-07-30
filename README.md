@@ -35,7 +35,7 @@ uv run alttp-jp-english-patcher --target ./alttp-jp-english \
 # Then extract the ROM-derived binaries and build, in the target:
 cd ./alttp-jp-english
 python3 binextract.py           # extract bin/* (JP) and english/* (US)
-./build_english_rom.sh          # -> alttp_english.sfc
+./build_english_rom.sh          # -> alttp-english.sfc
 ```
 
 `--jp-rom` / `--us-rom` are copied in as `alttp.sfc` / `alttp-us.sfc`, and are

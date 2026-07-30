@@ -238,8 +238,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if _run_verify(jpdasm, usdasm) != 0:
             return 1
 
-    print(
-        f"done. In {target}: run `python3 binextract.py`, "
-        "then `./build_english_rom.sh`."
-    )
+    print("\nDone.\n")
+    print(f"In {target} run these commands:")
+    print("  python3 binextract.py")
+    print("  ./build_english_rom.sh")
     return 0

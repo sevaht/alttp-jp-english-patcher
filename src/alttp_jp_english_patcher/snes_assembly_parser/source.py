@@ -108,17 +108,11 @@ def _assert_no_org(lines: list[Line]) -> None:
             raise ValueError(msg)
 
 
-def _split_arguments(text: str) -> tuple[list[str], list[str]]:
-    """Split an operand string on top-level commas.
+def _split_nested_commas(text: str) -> list[str]:
+    """Split on top-level commas, honoring ()/[] and quotes (the slow path).
 
-    Commas inside ``()``/``[]`` (e.g. ``(.vectors,X)``) or inside a quoted
-    string (e.g. ``incbin "a,b"``) are not separators.
-
-    Returns ``(arguments, separators)`` where ``arguments`` are the
-    whitespace-stripped operands and ``separators`` are the literal strings
-    between them (a comma plus any surrounding whitespace). There is exactly
-    one separator between each adjacent pair, so the original substring is
-    reproduced by interleaving them.
+    Used only when ``text`` actually contains a bracket or quote; the flat case
+    is a plain ``str.split`` in :func:`_split_arguments`.
     """
     parts: list[str] = []
     buffer: list[str] = []
@@ -144,6 +138,29 @@ def _split_arguments(text: str) -> tuple[list[str], list[str]]:
         else:
             buffer.append(char)
     parts.append("".join(buffer))
+    return parts
+
+
+def _split_arguments(text: str) -> tuple[list[str], list[str]]:
+    """Split an operand string on top-level commas.
+
+    Commas inside ``()``/``[]`` (e.g. ``(.vectors,X)``) or inside a quoted
+    string (e.g. ``incbin "a,b"``) are not separators.
+
+    Returns ``(arguments, separators)`` where ``arguments`` are the
+    whitespace-stripped operands and ``separators`` are the literal strings
+    between them (a comma plus any surrounding whitespace). There is exactly
+    one separator between each adjacent pair, so the original substring is
+    reproduced by interleaving them.
+    """
+    if "," not in text:  # the common case: 0 or 1 operand, no separators
+        return ([], []) if text == "" else ([text.strip()], [])
+    # Only ()/[] nesting or a quoted string can hide a comma, so only then walk
+    # char by char; the flat case (the vast majority) splits directly.
+    if any(bracket in text for bracket in "()[]\"'"):
+        parts = _split_nested_commas(text)
+    else:
+        parts = text.split(",")
 
     if parts == [""]:  # no operands at all
         return [], []
@@ -238,6 +255,14 @@ class Line:
             trail=match["trail"],
             comment=match["comment"],
         )
+
+    def __copy__(self) -> Line:
+        # A shallow copy (shares the argument lists, like copy.copy) built by
+        # direct dict-copy; far faster than the generic copy._reconstruct that
+        # dominated when copying the whole disassembly line by line.
+        new = Line.__new__(Line)
+        new.__dict__ = dict(self.__dict__)
+        return new
 
     @property
     def is_top_level_label(self) -> bool:

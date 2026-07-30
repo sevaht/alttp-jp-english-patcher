@@ -38,7 +38,7 @@ Extraction of the ROM-derived binaries is a separate, one-time step (see
 ```sh
 # 1. put both ROMs in this directory (see Binaries)
 python3 binextract.py          # extract bin/* (JP) and english/* (US)
-./build_english_rom.sh         # -> alttp_english.sfc   (Linux/macOS)
+./build_english_rom.sh         # -> alttp-english.sfc   (Linux/macOS)
 ```
 
 On Windows, run `binextract.py`, then `_build.bat` (or `make`). A correct

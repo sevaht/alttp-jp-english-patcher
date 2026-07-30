@@ -127,7 +127,7 @@ Then extract the ROM binaries and build in the target:
 ```bash
 cd ./alttp-jp-english
 python3 binextract.py
-./build_english_rom.sh                            # -> alttp_english.sfc
+./build_english_rom.sh                            # -> alttp-english.sfc
 ```
 
 ## Isolated review diff (two commits on the target)
