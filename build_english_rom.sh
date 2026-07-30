@@ -86,17 +86,14 @@ rm -f "$LOG"
 MD5=$(md5sum "$OUT" | cut -d' ' -f1)
 echo
 echo "SUCCESS -> $OUT  ($(stat -c%s "$OUT") bytes, md5 $MD5)"
-# Reference builds — a good build matches one of these three:
-#   default    6-character names + US/Japanese save-slot migration
-#   no-migrate 6-character names, generate.py --no-save-compatibility
-#   legacy     4-character names, generate.py --no-extended-names
-MD5_DEFAULT="6d4ac8e24e866f8b47881cda642455ca"
+# Reference builds — a good build matches one of these two:
+#   default    US/Japanese save-slot migration on
+#   no-migrate generate.py --no-save-compatibility
+MD5_DEFAULT="c94b73db14700a25f1be8c1ff003119a"
 MD5_NOMIGRATE="497648ef9b2d5d469ffd85c7bc9805fd"
-MD5_LEGACY="57b5ccc203b7192020a1d3d464a507be"
 case "$MD5" in
-  "$MD5_DEFAULT")   echo "  (verified: reference build — 6-char names + save compatibility)" ;;
-  "$MD5_NOMIGRATE") echo "  (verified: reference build — 6-char names, no save migration)" ;;
-  "$MD5_LEGACY")    echo "  (verified: reference build — legacy 4-char names)" ;;
+  "$MD5_DEFAULT")   echo "  (verified: reference build — save compatibility)" ;;
+  "$MD5_NOMIGRATE") echo "  (verified: reference build — no save migration)" ;;
   *) echo "  (note: matches no reference build — fine if you intended source changes; else check your ROMs)" ;;
 esac
 echo "Play it in any SNES emulator. Enjoy the English JP 1.0 ROM."

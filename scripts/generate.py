@@ -34,7 +34,6 @@ from snes_assembly_parser import (
     Line,
     Pool,
     Rom,
-    data,
     datas,
     dbr_trampolines,
     instructions,
@@ -77,15 +76,15 @@ def _redirect(bank: str, file: str) -> tuple[str, ...]:
     )
 
 
-# In-place save migrator, packed into the file-select bank and JSR'd on entry.
-# Any foreign save slot -- a US save, or a vanilla Japanese save -- is
-# converted to our 6-word-name-at-$3D5 format so it loads and plays. A word at
-# $410 tags
-# ours ($0006); the vanilla erase zeroes the whole slot, so a foreign save
-# reads $0000 there. It scans all 6 slots (3 files x main+backup, $500-strided
-# from $700000). Cheap to re-run: only a slot with a $55AA marker but no $410
-# tag ($3E1 = JP-family / $3E5 = US) pays the checksum + convert, once, then it
-# is tagged and skipped. New files are tagged in InitializeSaveFile.
+# In-place save migrator, packed into the file-select bank and invoked at boot
+# (see MigrateAtBoot / apply_base_edits). Any foreign save slot -- a US save,
+# or a vanilla Japanese save -- is converted to our 6-word-name-at-$3D5 format
+# so it loads and plays. A word at $410 tags ours ($0006); the vanilla erase
+# zeroes the whole slot, so a foreign save reads $0000 there. It scans all 6
+# slots (3 files x main+backup, $500-strided from $700000). Cheap to re-run:
+# only a slot with a $55AA marker but no $410 tag ($3E1 = JP-family / $3E5 =
+# US) pays the checksum + convert, once, then it is tagged and skipped. New
+# files are tagged in InitializeSaveFile.
 _SAVE_MIGRATION = "\n".join(  # noqa: FLY002 -- one line per asm statement
     [
         # Boot hook: bank_00 InitializeMemoryAndSRAM zeroes each main slot's
@@ -172,7 +171,34 @@ _SAVE_MIGRATION = "\n".join(  # noqa: FLY002 -- one line per asm statement
         "DEY",
         "BNE .shift",
         "RTS",
-        "ConvertJP:",  # vanilla Japanese name (kana) -> our \"Link  \"
+        # Japanese name: keep it only if every glyph is an uppercase-Latin
+        # letter or space (the sole characters shared by both fonts), remapped
+        # from the JP name codes (A-Z = $AA-$C3, space $CC) to ours; else fall
+        # back to "Link  ". Reads the 4-word JP field at $3D9 and writes our
+        # 6-word field at $3D5; writes land 4 bytes below the reads and go
+        # forward, so each source word is consumed before it's overwritten.
+        "ConvertJP:",
+        "STZ.b $04",  # $04 = non-Latin flag (0 = keep the name)
+        "LDX.b $00",
+        "LDA.l $7003D9,X",  # JP name word 1
+        "JSR JPWordToOurWord",
+        "STA.l $7003D5,X",
+        "LDA.l $7003DB,X",  # word 2
+        "JSR JPWordToOurWord",
+        "STA.l $7003D7,X",
+        "LDA.l $7003DD,X",  # word 3
+        "JSR JPWordToOurWord",
+        "STA.l $7003D9,X",
+        "LDA.l $7003DF,X",  # word 4
+        "JSR JPWordToOurWord",
+        "STA.l $7003DB,X",
+        "LDA.w #$00A9",  # trailing spaces (words 5-6)
+        "STA.l $7003DD,X",
+        "STA.l $7003DF,X",
+        "LDA.b $04",
+        "BNE .link",  # a non-Latin glyph -> default name instead
+        "RTS",
+        ".link",  # vanilla kana (or any non-Latin) -> "Link  "
         "LDX.b $00",
         "LDA.w #$000B",  # L
         "STA.l $7003D5,X",
@@ -186,6 +212,44 @@ _SAVE_MIGRATION = "\n".join(  # noqa: FLY002 -- one line per asm statement
         "STA.l $7003DD,X",
         "STA.l $7003DF,X",  # space
         "RTS",
+        # One JP name word -> our name word. Decodes the nibble-spread store
+        # (code = ((w>>1)&$FFF0)|(w&$0F)); space ($CC) and A-Z ($AA-$C3, with I
+        # at our $5F) map via JPLatinToWord; anything else sets $04.
+        "JPWordToOurWord:",
+        "PHA",  # W
+        "AND.w #$000F",
+        "STA.b $06",  # low nibble
+        "PLA",  # W
+        "LSR A",
+        "AND.w #$FFF0",
+        "ORA.b $06",  # A = decoded JP code
+        "CMP.w #$00CC",  # space?
+        "BNE .not_space",
+        "LDA.w #$00A9",  # our space
+        "RTS",
+        ".not_space",
+        "CMP.w #$00AA",  # < 'A'?
+        "BCC .not_latin",
+        "CMP.w #$00C4",  # > 'Z'?
+        "BCS .not_latin",
+        "SEC",
+        "SBC.w #$00AA",  # k = code - $AA
+        "ASL A",  # word index
+        "PHX",  # preserve slot offset (no long,Y form -- index with X)
+        "TAX",
+        "LDA.l JPLatinToWord,X",
+        "PLX",
+        "RTS",
+        ".not_latin",
+        "LDA.w #$0001",
+        "STA.b $04",  # fall back to the default name
+        "LDA.w #$00A9",  # placeholder (the .link path overwrites it)
+        "RTS",
+        "JPLatinToWord:",  # our stored word for JP letters A..Z
+        "dw $0000, $0001, $0002, $0003, $0004, $0005, $0006, $0007",
+        "dw $00AF, $0009, $000A, $000B, $000C, $000D, $000E, $000F",
+        "dw $0020, $0021, $0022, $0023, $0024, $0025, $0026, $0027",
+        "dw $0028, $0029",
         "StampAndChecksum:",  # tag ours + recompute SAVEICKSM ($5A5A - sum)
         "LDX.b $00",
         "LDA.w #$0006",
@@ -217,9 +281,7 @@ _SAVE_MIGRATION = "\n".join(  # noqa: FLY002 -- one line per asm statement
 THEFONT_LABELS = frozenset({"TheFont", "TheFont_end"})
 
 
-def text(
-    sources: Sources, *, changes: bool, extended_names: bool
-) -> Relocation:
+def text(sources: Sources, *, changes: bool) -> Relocation:
     """The US text subsystem: the VWF font (bank ``$20``), the message engine
     (mirror-placed to ``$2E``), and the message data (``$22``/``$23``).
 
@@ -249,30 +311,10 @@ def text(
     masks_hook = jp.address_of("BuildSomeTextMasks")
 
     if changes:
-        # (1) [NAME] field: 6-char (extended) vs the legacy 4-char build.
-        if extended_names:
-            # The name is a 6-word field at $3D5 (widened -- see file_select),
-            # so the stock US 6-char handler works; just repoint its read.
-            name_field: list[Edit] = [
-                ("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)
-            ]
-        else:
-            # Narrow the US 6-char handler to JP's 4-char field at $3D9: read/
-            # filter/copy 4, then DEX DEX + $EA fill (byte-neutral) for slots
-            # 5-6.
-            def narrow_to_four(engine: Assembly) -> None:
-                engine.replace("CPY.w #$0006", "CPY.w #$0004", count=2)
-                engine.replace("LDY.w #$0005", "LDY.w #$0003", count=1)
-                engine.splice(
-                    "LDA.b $0C",
-                    [
-                        *instructions(["DEX", "DEX"]),
-                        data("db " + ", ".join(["$EA"] * 10)),
-                    ],
-                    until=";---",
-                )
-
-            name_field = [narrow_to_four]
+        # (1) [NAME] field: the name is a 6-word field at $3D5 (widened -- see
+        # file_select), so the stock US 6-char handler works; just repoint its
+        # read.
+        name_field: list[Edit] = [("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)]
         # (2) repoints RenderText_Choose2HighOr3's two cursor prompts to the
         # copies re-appended below.
         engine_edits: dict[str, list[Edit]] = {
@@ -655,7 +697,7 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
 
 
 def file_select(
-    sources: Sources, *, changes: bool, extended_names: bool, save_compat: bool
+    sources: Sources, *, changes: bool, save_compat: bool
 ) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry, packed
     contiguously from ``$2C8000`` (two JP-restored save routines are too big
@@ -751,66 +793,28 @@ def file_select(
         block.replace("LDA.b #$3E", "LDA.b #$83", count=1)
         block.replace("LDA.w #$019C", "LDA.w #$01F0", count=1)
         block.replace("LDA.w #$018C", "LDA.w #$00A9", count=1)
-        if extended_names:
-            # widen: prepend two blank-writes so all 6 words ($3D5-$3DF) clear.
-            block.insert_before(
-                "STA.l $7003D9,X",
-                instructions(["STA.l $7003D5,X", "STA.l $7003D7,X"]),
-            )
-        # else JP's native four blank-writes at $3D9 match the 4-char field.
+        # widen: prepend two blank-writes so all 6 words ($3D5-$3DF) clear.
+        block.insert_before(
+            "STA.l $7003D9,X",
+            instructions(["STA.l $7003D5,X", "STA.l $7003D7,X"]),
+        )
 
-    def edit_name_player_tilemap(block: Assembly) -> None:
-        # Narrow NamePlayerTilemap's 7-value name row to 3 (the 4-char name);
-        # matched by exact argument (it is a substring of the row above it).
-        wide = ["$1587", "$1588", "$1587", "$1588", "$1587", "$1588", "$1587"]
-        narrow = ["$1587", "$1588", "$1587"]
-        for line in block.lines:
-            if line.opcode == "dw" and line.arguments == wide:
-                line.arguments = narrow
-                line.arg_seps = line.arg_seps[: len(narrow) - 1]
-                line.size = len(narrow) * 2
-                return
-        msg = "NamePlayerTilemap: wide name row not found"
-        raise ValueError(msg)
-
-    # Player-name width fork. EXTENDED widens the SRAM name to a contiguous
-    # 6-word field at $3D5 (ending just before the JP checksum marker at $3E1),
-    # so the US 6-char-native routines just need their base repointed -4
-    # ($7003D9 -> $7003D5). LEGACY keeps JP's 4-word field at $3D9 and narrows
-    # the US routines to 4. Either way FileSelect_HandleInput/DrawDeaths touch
-    # only post-name data (SCHKSM $3E1, deaths $401), so they are unchanged.
-    if extended_names:
-        shift = ("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)
-        name_edits: dict[str, list[Edit]] = {
-            "CopyFile_SelectionAndBlinker": [shift],
-            "CopyFile_TargetSelectionAndBlink": [shift],
-            "FileSelect_CopyNameToStripes": [shift],
-            "NameFile_DrawSelectedCharacter": [shift],
-            # the char write + the terminator read -- both $7003D9,X.
-            "NameFile_DoTheNaming": [("$7003D9", "$7003D5", 2)],
-            # the special-name cheat check (name-word 1 -> mushroom + items).
-            "InitializeSaveFile": [("LDA.l $7003D9", "LDA.l $7003D5", 1)],
-        }
-    else:
-        narrow = ("LDA.w #$0006", "LDA.w #$0004", 1)
-        name_edits = {
-            "CopyFile_SelectionAndBlinker": [narrow],
-            "CopyFile_TargetSelectionAndBlink": [narrow],
-            "FileSelect_CopyNameToStripes": [narrow],
-            "NameFile_DoTheNaming": [
-                ("LDA.b #$05", "LDA.b #$03", 1),
-                ("CMP.b #$06", "CMP.b #$04", 1),
-                ("CMP.w #$000A", "CMP.w #$0006", 1),
-            ],
-            "NamePlayerTilemap": [
-                ("dw $6311, $1840", "dw $6311, $1040", 1),
-                ("dw $8311, $1840", "dw $8311, $1040", 1),
-                ("dw $A311, $1840", "dw $A311, $1040", 1),
-                ("dw $4211, $1D00", "dw $4211, $1500", 1),
-                ("dw $7011, $0580", "dw $6C11, $0580", 1),
-                edit_name_player_tilemap,
-            ],
-        }
+    # Player name: widen the SRAM name to a contiguous 6-word field at $3D5
+    # (ending just before the JP checksum marker at $3E1), so the US
+    # 6-char-native routines just need their base repointed -4 ($7003D9 ->
+    # $7003D5). FileSelect_HandleInput/DrawDeaths touch only post-name data
+    # (SCHKSM $3E1, deaths $401), so they are unchanged.
+    shift = ("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)
+    name_edits: dict[str, list[Edit]] = {
+        "CopyFile_SelectionAndBlinker": [shift],
+        "CopyFile_TargetSelectionAndBlink": [shift],
+        "FileSelect_CopyNameToStripes": [shift],
+        "NameFile_DrawSelectedCharacter": [shift],
+        # the char write + the terminator read -- both $7003D9,X.
+        "NameFile_DoTheNaming": [("$7003D9", "$7003D5", 2)],
+        # the special-name cheat check (name-word 1 -> mushroom + items).
+        "InitializeSaveFile": [("LDA.l $7003D9", "LDA.l $7003D5", 1)],
+    }
     edits: dict[str, list[Edit]] = {
         "FileSelect_HandleInput": [("LDA.l $7003E5,X", "LDA.l $7003E1,X", 1)],
         "FileSelect_DrawDeaths": [("LDA.l $700405,X", "LDA.l $700401,X", 1)],
@@ -826,12 +830,11 @@ def file_select(
         **name_edits,
     }
 
-    # Save compatibility: migrate foreign slots to our format. Only for the
-    # 6-char build (it converts *to* the $3D5 field), and skippable with
-    # save_compat=False. The migrator itself (_SAVE_MIGRATION) lands in this
+    # Save compatibility: migrate foreign slots to our format (skippable with
+    # save_compat=False). The migrator itself (_SAVE_MIGRATION) lands in this
     # bank; it is *invoked* at boot from bank_00 (see apply_base_edits) so it
     # runs before InitializeMemoryAndSRAM's $3E1 sanity zeroing.
-    migrate = changes and extended_names and save_compat
+    migrate = changes and save_compat
     if migrate:
 
         def tag_new_file(block: Assembly) -> None:
@@ -1187,12 +1190,7 @@ def patch_main_asm(english: Rom) -> None:
 
 
 def build(
-    *,
-    usdasm: Path,
-    jpdasm: Path,
-    changes: bool,
-    extended_names: bool = True,
-    save_compat: bool = True,
+    *, usdasm: Path, jpdasm: Path, changes: bool, save_compat: bool = True
 ) -> Rom:
     """Assemble the whole English program as one editable :class:`Rom`.
 
@@ -1203,26 +1201,20 @@ def build(
     into ``english``, the base banks are hooked to reach them (unless
     ``changes`` is off, the change-free baseline), and ``main.asm`` is wired.
     Writing it back out -- base banks hooked in place, graft banks beside them
-    -- is the caller's :meth:`Rom.write`. ``extended_names`` builds 6-character
-    player names (the default); ``False`` is the legacy 4-character build.
-    ``save_compat`` adds the on-entry migrator that converts US / vanilla-
-    Japanese save slots to our format (the default; 6-char build only).
+    -- is the caller's :meth:`Rom.write`. Player names are a 6-character field.
+    ``save_compat`` adds the boot-time migrator that converts US / vanilla-
+    Japanese save slots to our format (the default).
     """
     sources = Sources(
         us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
     )
     english = sources.jp.copy()
     relocations = [
-        text(sources, changes=changes, extended_names=extended_names),
+        text(sources, changes=changes),
         font_upload(sources, changes=changes),
         credits_bank(sources, changes=changes),
         item_menu(sources, changes=changes),
-        file_select(
-            sources,
-            changes=changes,
-            extended_names=extended_names,
-            save_compat=save_compat,
-        ),
+        file_select(sources, changes=changes, save_compat=save_compat),
         graphics(changes=changes),
         file_select_palette(),
     ]
@@ -1234,8 +1226,8 @@ def build(
         english.add(relocation)
     if changes:
         # the few edits that are not plain hooks; the boot-time save migrator
-        # is gated like file_select's (6-char build + save_compat).
-        apply_base_edits(english, migrate=extended_names and save_compat)
+        # is gated like file_select's (save_compat).
+        apply_base_edits(english, migrate=save_compat)
     patch_main_asm(english)
     return english
 
@@ -1246,11 +1238,6 @@ def main() -> None:
         "--baseline",
         action="store_true",
         help="emit the change-free baseline (no graft edits or base hooks)",
-    )
-    parser.add_argument(
-        "--no-extended-names",
-        action="store_true",
-        help="legacy 4-character player names (default: 6-character names)",
     )
     parser.add_argument(
         "--no-save-compatibility",
@@ -1270,7 +1257,6 @@ def main() -> None:
         usdasm=args.usdasm,
         jpdasm=args.jpdasm,
         changes=not args.baseline,
-        extended_names=not args.no_extended_names,
         save_compat=not args.no_save_compatibility,
     )
     generated = english.write(args.out, bank_header=bank_header)
