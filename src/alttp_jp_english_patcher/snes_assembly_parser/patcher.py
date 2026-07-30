@@ -168,12 +168,20 @@ class Patcher:
             msg = f"landing_pads: {free_label!r} has no address anchor"
             raise KeyError(msg)
         region_size = sum(line.size for line in span)
+        # Trailing comment/blank lines are the *following* block's header (they
+        # sit after the free region's last byte, before the next label), not
+        # part of the fill -- keep them so re-using the region for stubs does
+        # not swallow a header comment.
+        tail = len(span)
+        while tail > 0 and not span[tail - 1].has_content:
+            tail -= 1
 
         stubs, end_address = landing_pad_lines(pads, base)
         replacement = [
             *_lines(header),
             *stubs,
             *free_block(end_address, base + region_size - end_address),
+            *span[tail:],
         ]
         self.assembly.lines[start:end] = replacement
         self._reindex()
