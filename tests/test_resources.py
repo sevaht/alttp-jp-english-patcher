@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from importlib import resources
 
-from alttp_jp_english_patcher.generate import _save_migration_lines
+from alttp_jp_english_patcher.generate import (
+    _resource_lines,
+    _save_migration_lines,
+)
 from alttp_jp_english_patcher.snes_assembly_parser import Assembly
 from alttp_jp_english_patcher.verify_base import BASE_BANKS, _reference_text
 
@@ -15,6 +18,16 @@ def test_save_migration_asm_is_bundled_and_parses() -> None:
     for label in ("MigrateAtBoot:", "MigrateSaveSlots:", "JPLatinToWord:"):
         assert label in text
     # it must be valid enough to build an Assembly without raising
+    assert Assembly.from_content(lines).lines
+
+
+def test_usfs_palette_load_asm_is_bundled_and_parses() -> None:
+    lines = _resource_lines("usfs_palette_load.asm")
+    assert lines, "usfs_palette_load.asm resource is empty/missing"
+    text = "\n".join(lines)
+    for label in ("USFS_PaletteLoadForFileSelect:", ".row5", ".row11"):
+        assert label in text
+    assert "USFS_Palette" in text  # the incbin'd data it overlays
     assert Assembly.from_content(lines).lines
 
 

@@ -76,18 +76,29 @@ def _redirect(bank: str, file: str) -> tuple[str, ...]:
     )
 
 
-# In-place save migrator (packed into the file-select bank, invoked at boot):
-# US and vanilla-Japanese save slots are converted to our 6-word-name-at-$3D5
-# format so they load and play. The hand-written 65816 lives in the
-# ``save_migration.asm`` package resource -- read verbatim here; the label
-# namespacing / placement into bank $2C happens in ``file_select``.
-def _save_migration_lines() -> list[str]:
+def _resource_lines(filename: str) -> list[str]:
+    """A hand-written 65816 package resource (``resources/<filename>``), read
+    verbatim as lines. Label namespacing / placement is the caller's job."""
     text = (
         resources.files("alttp_jp_english_patcher")
-        .joinpath("resources", "save_migration.asm")
+        .joinpath("resources", filename)
         .read_text(encoding="utf-8")
     )
     return text.splitlines()
+
+
+# In-place save migrator (packed into the file-select bank, invoked at boot):
+# US and vanilla-Japanese save slots are converted to our 6-word-name-at-$3D5
+# format so they load and play.
+def _save_migration_lines() -> list[str]:
+    return _resource_lines("save_migration.asm")
+
+
+def nop_fill(count: int, tag: str, comment: str) -> list[Line]:
+    """Baseline stand-in for a full-only insertion: same byte count (``NOP``
+    is 1 byte, harmless in straight-line code), so an edited routine's size --
+    and every anchor after it -- matches the full build exactly."""
+    return notes([f"; [{tag}] {comment}"]) + instructions(["NOP"] * count)
 
 
 # The VWF font blob's labels, shared by the text engine and the bank_00 upload;
@@ -142,21 +153,22 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
     decompress_hook = jp.address_of("DecompressFontGFX")
     masks_hook = jp.address_of("BuildSomeTextMasks")
 
+    # (2) message-ID realignment, done in the ENGINE instead of the data. The
+    # US has two messages JP lacks -- the Choose2High cursor prompts at IDs
+    # $0B/$0C -- so every later message's US ID is JP's + 2. Rather than
+    # delete them (which physically moves every byte of the data, exploding
+    # the bank_22/bank_23 diff), teach CreateMessagePointers to hand those two
+    # the out-of-range IDs $18B/$18C as it assigns IDs, so every real message
+    # keeps its JP ID while the data stays byte-for-byte the US layout. Only
+    # RenderText_Choose2HighOr3 references the two (repointed below,
+    # full-only); without the redirect a 2-option "high" prompt (e.g. the
+    # Great Fairy upgrade) would load whatever sits at ID $0B.
+    #
+    # Applied UNCONDITIONALLY, self-branching on `changes` at each site (real
+    # redirect vs. same-size NOP filler in baseline), so CreateMessagePointers
+    # is byte-neutral between baseline and full -- no cascade into RenderText
+    # or the rest of the engine.
     if changes:
-        # (1) [NAME] field: the name is a 6-word field at $3D5 (widened -- see
-        # file_select), so the stock US 6-char handler works; just repoint its
-        # read.
-        name_field: list[Edit] = [("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)]
-        # (2) message-ID realignment, done in the ENGINE instead of the data.
-        # The US has two messages JP lacks -- the Choose2High cursor prompts at
-        # IDs $0B/$0C -- so every later message's US ID is JP's + 2. Rather
-        # than delete them (which physically moves every byte of the data,
-        # exploding the bank_22/bank_23 diff), teach CreateMessagePointers to
-        # hand those two the out-of-range IDs $18B/$18C as it assigns IDs, so
-        # every real message keeps its JP ID while the data stays byte-for-byte
-        # the US layout. Only RenderText_Choose2HighOr3 references the two
-        # (repointed below); without the redirect a 2-option "high" prompt
-        # (e.g. the Great Fairy upgrade) would load whatever sits at ID $0B.
         engine.insert_after(
             "#_0ED3F9:",  # LDX #$0000 -- the table-index / ID-counter init
             instructions(
@@ -168,6 +180,14 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
                 ]
             ),
         )
+    else:
+        engine.insert_after(
+            "#_0ED3F9:",
+            nop_fill(
+                10, "ENG-TEXT", "reserved: see CreateMessagePointers init"
+            ),
+        )
+    if changes:
         engine.insert_before(
             "#_0ED3FC:",  # the per-message store, right past .next_message
             [
@@ -195,6 +215,19 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
                 Line.from_line(".store"),
             ],
         )
+    else:
+        engine.insert_before(
+            "#_0ED3FC:",
+            nop_fill(
+                37, "ENG-TEXT", "reserved: see CreateMessagePointers check"
+            ),
+        )
+
+    if changes:
+        # (1) [NAME] field: the name is a 6-word field at $3D5 (widened -- see
+        # file_select), so the stock US 6-char handler works; just repoint its
+        # read.
+        name_field: list[Edit] = [("LDA.l $7003D9,X", "LDA.l $7003D5,X", 1)]
         # (3) repoint RenderText_Choose2HighOr3's two cursor prompts to the
         # high IDs the engine now assigns them.
         engine_edits: dict[str, list[Edit]] = {
@@ -210,7 +243,7 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
             ],
         }
         engine.apply_edit_table(engine_edits)
-        engine.ensure_anchors()  # anchor the hand-written inserted lines
+    engine.ensure_anchors()  # anchor the hand-written lines (either build)
 
     engine_org = mirror(require_start(engine))  # $0EC440 -> $2EC440
     engine_text = engine.render(engine_org)
@@ -619,12 +652,6 @@ def file_select(
         irq.append(instructions(["JML $00821B"]))
         return irq
 
-    def nop_fill(count: int, comment: str) -> list[Line]:
-        # Baseline stand-in for a full-only insertion: same byte count (NOP is
-        # 1 byte, harmless in straight-line code), so the routine's total size
-        # -- and every anchor after it -- matches the full build exactly.
-        return notes([f"; [ENG-FS] {comment}"]) + instructions(["NOP"] * count)
-
     def edit_initialize_gfx(block: Assembly) -> None:
         # JP FileSelect_InitializeGFX -> English (name-banner + BG3 setup).
         # Each site is made byte-neutral between baseline/full (real edit vs.
@@ -640,7 +667,9 @@ def file_select(
             # unedited site is 3 bytes; the full build's replacement is 8.
             block.insert_after(
                 "STZ.w $0AB6",
-                nop_fill(5, "reserved: see FileSelect_InitializeGFX>0AB6"),
+                nop_fill(
+                    5, "ENG-FS", "reserved: see FileSelect_InitializeGFX>0AB6"
+                ),
             )
         if changes:
             block.delete("LDA.b #$01", until="STA.w $0AB2")
@@ -656,7 +685,9 @@ def file_select(
         else:
             block.insert_after(
                 "STA.w $0AA1",
-                nop_fill(5, "reserved: see FileSelect_InitializeGFX>0AA1"),
+                nop_fill(
+                    5, "ENG-FS", "reserved: see FileSelect_InitializeGFX>0AA1"
+                ),
             )
 
     def edit_erase(block: Assembly) -> None:
@@ -679,7 +710,9 @@ def file_select(
         else:
             block.insert_before(
                 "STA.l $7003D9,X",
-                nop_fill(8, "reserved: see NameFile_EraseSave>7003D9"),
+                nop_fill(
+                    8, "ENG-FS", "reserved: see NameFile_EraseSave>7003D9"
+                ),
             )
 
     # Player name: widen the SRAM name to a contiguous 6-word field at $3D5
@@ -928,79 +961,38 @@ def graphics(*, changes: bool) -> Relocation:
     return relocation
 
 
-def file_select_palette() -> Relocation:
+def file_select_palette(*, changes: bool) -> Relocation:
     """Bank ``$27``: the file-select US palette overlay. Four CGRAM rows differ
-    JP<->US; ``USFS_PaletteLoadForFileSelect`` runs the stock US load and then
-    overlays those four US palettes (US-ROM ``PaletteData`` slices,
-    ``incbin``\\ 'd from ``english/usfs_pal.bin``). ``file_select`` repoints
-    the one ``JSL`` at it. Keeping all four palettes here (not filling JP's
-    empty ``owanim_00`` in bank_1B) keeps every US palette in the graft and the
-    base edit a pure repoint -- the shared ``PaletteLoadSingle`` reads bank $1B
-    only, so a 2nd-MB copy is unreachable through the stock load anyway.
-
-    NOTE on row 5: statically it looks unneeded -- the file-select drives
-    ``PaletteLoad_UnderworldSet`` with ``$0AB6 = #$06`` (dungeon set $06, which
-    is byte-identical US<->JP), and the overlaid slice ($1BD9AA) is in set $03.
-    But dropping it was tested and turned the wooden file-select borders the
-    wrong colour, so the runtime CGRAM ends up needing it after all -- the load
-    path is more involved than the static read suggests. Keep all four rows.
+    JP<->US; ``USFS_PaletteLoadForFileSelect`` (our own routine, hand-written
+    -- not sourced from either disassembly, so it is full-only; see
+    ``resources/usfs_palette_load.asm``) runs the stock US load and then
+    overlays those four US palettes from ``USFS_Palette`` (a plain US-ROM
+    ``PaletteData`` byte slice, ``incbin``\\ 'd from ``english/usfs_pal.bin``
+    -- present in both builds, like the graft's other raw asset extractions).
+    ``file_select`` repoints the one ``JSL`` at it. Keeping all four palettes
+    here (not filling JP's empty ``owanim_00`` in bank_1B) keeps every US
+    palette in the graft and the base edit a pure repoint -- the shared
+    ``PaletteLoadSingle`` reads bank $1B only, so a 2nd-MB copy is unreachable
+    through the stock load anyway.
     """
-    relocation = Relocation()
+    relocation = Relocation(changes=changes)
+    body = ""
+    if changes:
+        code = Assembly.from_content(
+            _resource_lines("usfs_palette_load.asm")
+        ).ensure_anchors()
+        # namespace=False below keeps this bare (file_select()'s repoint
+        # references this exact name); render it ourselves at this piece's
+        # org so its #_ anchors are correct without going through the (here,
+        # skipped) EN_-namespacing render path.
+        body = code.render(0x278000) + "\n\n"
+    body += (
+        "; Four US file-select palettes (colors 1-7 each), CGRAM-row order"
+        " 5, 7, 9, 11.\n"
+        'USFS_Palette:\n    incbin "english/usfs_pal.bin"'
+    )
     relocation.place(
-        """\
-USFS_PaletteLoadForFileSelect:
-    JSL PaletteLoadForFileSelect    ; stock US load (JP palette for FS rows)
-    PHP                             ; preserve caller's processor mode (M/X)
-    REP #$30                        ; 16-bit A AND index
-    PHB
-    PHK
-    PLB
-    LDX.w #$0000
-.row5
-    LDA.l USFS_Palette+$00,X
-    STA.l $7EC3A2,X                 ; buffer A (compose)
-    STA.l $7EC5A2,X                 ; buffer B (NMI DMA source)
-    INX
-    INX
-    CPX.w #$000E
-    BNE .row5
-    LDX.w #$0000
-.row7
-    LDA.l USFS_Palette+$0E,X
-    STA.l $7EC3E2,X
-    STA.l $7EC5E2,X
-    INX
-    INX
-    CPX.w #$000E
-    BNE .row7
-    LDX.w #$0000
-.row9
-    LDA.l USFS_Palette+$1C,X
-    STA.l $7EC422,X
-    STA.l $7EC622,X
-    INX
-    INX
-    CPX.w #$000E
-    BNE .row9
-    LDX.w #$0000
-.row11
-    LDA.l USFS_Palette+$2A,X
-    STA.l $7EC462,X
-    STA.l $7EC662,X
-    INX
-    INX
-    CPX.w #$000E
-    BNE .row11
-    LDA.w #$0000                    ; row 14 color 15 -> black (US)
-    STA.l $7EC4DE
-    STA.l $7EC6DE
-    PLB
-    PLP
-    RTL
-
-; Four US file-select palettes (colors 1-7 each), CGRAM-row order 5, 7, 9, 11.
-USFS_Palette:
-    incbin "english/usfs_pal.bin\"""",
+        body,
         0x278000,
         "file-select US palette overlay + data.",
         namespace=False,
@@ -1211,7 +1203,7 @@ def build(
         item_menu(sources, changes=changes),
         file_select(sources, changes=changes, save_compat=save_compat),
         graphics(changes=changes),
-        file_select_palette(),
+        file_select_palette(changes=changes),
     ]
     # Wire hooks first: it classifies each hook (alias vs pad) from the
     # pristine JP's callers and records the alias set the pieces then emit.
