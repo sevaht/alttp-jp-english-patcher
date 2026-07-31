@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import subprocess
 import sys
 from importlib import resources
 from typing import TYPE_CHECKING
 
+from alttp_jp_english_patcher.application import _deploy_tooling
 from alttp_jp_english_patcher.generate import (
     _resource_lines,
     _save_migration_lines,
@@ -79,6 +81,15 @@ def test_makefile_and_build_bat_target_the_english_rom() -> None:
         assert "alttp_reasm.sfc" not in text
         assert "--fix-checksum=on" in text
         assert "--fix-checksum=off" not in text
+
+
+def test_deploy_tooling_makes_scripts_executable(tmp_path: Path) -> None:
+    # binextract.py and _build.sh are meant to be run directly
+    # (`./binextract.py`, `./_build.sh`); write_bytes() doesn't carry over
+    # the source's executable bit, so _deploy_tooling must chmod them.
+    _deploy_tooling(tmp_path)
+    for name in ("binextract.py", "_build.sh"):
+        assert os.access(tmp_path / name, os.X_OK), f"{name} not executable"
 
 
 def test_render_binextract_us_is_valid_python() -> None:

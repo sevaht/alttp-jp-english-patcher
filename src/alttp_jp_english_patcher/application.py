@@ -135,6 +135,7 @@ def _deploy_tooling(target: Path) -> None:
         (target / name).write_bytes(root.joinpath(name).read_bytes())
     (target / "binextract-us.py").write_text(render_binextract_us())
     (target / "_build.sh").chmod(0o755)
+    (target / "binextract.py").chmod(0o755)
 
 
 def _place_roms(target: Path, args: argparse.Namespace) -> None:
