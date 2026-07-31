@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Append the English graft's ignore rules to a target ``.gitignore``.
 
-The ROM-derived binaries under ``english/`` are copyrighted game data and must
-not be committed (same policy as the disassembly's own ``bin/``); they are
-regenerated from the user's ROMs by ``binextract-us.py``. Idempotent: only
-rules not already present are appended.
+The US-ROM-derived binaries under ``bin/gfx/`` (the ``us_*`` files, alongside
+the disassembly's own JP-ROM-derived ones there) are copyrighted game data and
+must not be committed (same policy as those); they are regenerated from the
+user's ROM by ``binextract-us.py``. Battery saves (``*.srm``) are player save
+state from testing the build (e.g. in an emulator), not source -- also not
+committed. Idempotent: only rules not already present are appended.
 """
 
 from __future__ import annotations
@@ -13,24 +15,34 @@ import argparse
 import sys
 from pathlib import Path
 
-HEADER = (
-    "# --- english translation: ROM-derived assets"
-    " (regenerate, don't commit) ---"
-)
-RULES = (
-    "english/*.2bpp",
-    "english/*.2bppc",
-    "english/*.3bppc",
-    "english/*.bin",
+_BLOCKS = (
+    (
+        "# --- english translation: US-ROM-derived assets"
+        " (regenerate, don't commit) ---",
+        (
+            "bin/gfx/us_*.2bpp",
+            "bin/gfx/us_*.2bppc",
+            "bin/gfx/us_*.3bppc",
+            "bin/gfx/us_*.bin",
+        ),
+    ),
+    (
+        "# --- battery saves from testing the build (not source) ---",
+        ("*.srm",),
+    ),
 )
 
 
 def patch(text: str) -> str:
     present = {line.strip() for line in text.splitlines()}
-    missing = [rule for rule in RULES if rule not in present]
-    if not missing:
+    blocks = []
+    for header, rules in _BLOCKS:
+        missing = [rule for rule in rules if rule not in present]
+        if missing:
+            blocks.append("\n".join([header, *missing]))
+    if not blocks:
         return text
-    block = "\n".join([HEADER, *missing]) + "\n"
+    block = "\n\n".join(blocks) + "\n"
     if not text.strip():
         return block
     return text.rstrip("\n") + "\n\n" + block

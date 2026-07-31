@@ -18,13 +18,14 @@ from .assembly import (
     data,
     datas,
     dbr_trampolines,
+    incbin_line,
     instruction,
     instructions,
     join,
     note,
     notes,
 )
-from .hooking import LandingPad, free_block
+from .hooking import LandingPad, free_block, free_block_padded, free_space
 from .patcher import Patcher
 from .rom import Caller, Rom
 from .segment import Segment, code, code_lines
@@ -71,6 +72,9 @@ __all__ = [
     "datas",
     "dbr_trampolines",
     "free_block",
+    "free_block_padded",
+    "free_space",
+    "incbin_line",
     "instruction",
     "instruction_shape",
     "instructions",

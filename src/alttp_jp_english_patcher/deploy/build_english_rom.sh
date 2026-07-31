@@ -4,7 +4,7 @@
 # _build.bat). This ONLY assembles; extract the ROM-derived binaries first:
 #
 #   1. place your two ROMs here:  alttp.sfc (JP 1.0)  and  alttp-us.sfc (US)
-#   2. python3 binextract.py       # extracts bin/* (JP) and english/* (US)
+#   2. python3 binextract.py       # extracts bin/gfx/* (JP + US), bin/brr/* (JP)
 #   3. ./build_english_rom.sh      # -> alttp-english.sfc
 #
 set -euo pipefail
@@ -47,8 +47,8 @@ echo "SUCCESS -> $OUT  ($(stat -c%s "$OUT") bytes, md5 $MD5)"
 # Reference builds — a good build matches one of these two:
 #   default    US/Japanese save-slot migration on
 #   no-migrate patcher deployed with --no-save-compatibility
-MD5_DEFAULT="3fa0ee9b909ac76ef444314cd45c999f"
-MD5_NOMIGRATE="3e4bf0f88a5ad01ae78d49e6b1108628"
+MD5_DEFAULT="fa28c040306b075c76c1b5c1ede30553"
+MD5_NOMIGRATE="abb74f0375cab138deedaf9c64f17312"
 case "$MD5" in
   "$MD5_DEFAULT")   echo "  (verified: reference build — save compatibility)" ;;
   "$MD5_NOMIGRATE") echo "  (verified: reference build — no save migration)" ;;

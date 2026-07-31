@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+import ast
+import hashlib
+import subprocess
+import sys
 from importlib import resources
+from typing import TYPE_CHECKING
 
 from alttp_jp_english_patcher.generate import (
     _resource_lines,
     _save_migration_lines,
 )
 from alttp_jp_english_patcher.snes_assembly_parser import Assembly
+from alttp_jp_english_patcher.us_assets import (
+    US_ASSETS,
+    US_ROM_MD5,
+    render_binextract_us,
+)
 from alttp_jp_english_patcher.verify_base import BASE_BANKS, _reference_text
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_save_migration_asm_is_bundled_and_parses() -> None:
@@ -38,14 +51,67 @@ def test_reference_hashes_resource_covers_every_base_bank() -> None:
 
 
 def test_deploy_files_are_bundled() -> None:
+    # binextract-us.py is NOT a static deploy file: it is generated from
+    # us_assets.US_ASSETS (see test_render_binextract_us_* below), so its
+    # (offset, size, md5) data can never drift from generate.py's incbin
+    # sizing -- both read the same table.
     root = resources.files("alttp_jp_english_patcher").joinpath("deploy")
-    for name in (
-        "binextract.py",
-        "binextract-us.py",
-        "build_english_rom.sh",
-        "README.md",
-    ):
+    for name in ("binextract.py", "build_english_rom.sh", "README.md"):
         assert root.joinpath(name).is_file()
+
+
+def test_render_binextract_us_is_valid_python() -> None:
+    text = render_binextract_us()
+    ast.parse(text)  # raises SyntaxError if malformed
+    # one ASSETS row per US_ASSETS entry, in the same order, agreeing values
+    for a in US_ASSETS:
+        assert f"{a.filename!r}" in text
+        assert f"{a.md5!r}" in text
+        for s in a.slices:
+            assert f"{s.offset:#x}" in text
+            assert f"{s.length:#x}" in text
+
+
+def test_render_binextract_us_extracts_from_a_synthetic_rom(
+    tmp_path: Path,
+) -> None:
+    # a big-enough synthetic "ROM": each byte equals its own low byte, so
+    # every slice's content -- and thus its md5 -- is deterministic and
+    # independent of the real US ROM (this only proves the GENERATED
+    # SCRIPT's own slicing/plumbing is correct, not that the real offsets
+    # are right -- that is proven by generate.py's actual build against a
+    # real ROM elsewhere).
+    size = max(s.offset + s.length for a in US_ASSETS for s in a.slices) + 1
+    rom = bytes(i & 0xFF for i in range(size))
+    rom_path = tmp_path / "alttp-us.sfc"
+    rom_path.write_bytes(rom)
+
+    def digest(data: bytes) -> str:
+        # matches the identity check the ROMs/assets use -- not a security
+        # context, hence usedforsecurity=False (satisfies ruff's S324).
+        return hashlib.md5(data, usedforsecurity=False).hexdigest()
+
+    # patch the generated script's md5 checks to match our synthetic ROM/
+    # assets, so it runs end-to-end without needing the real copyrighted ROM
+    text = render_binextract_us()
+    text = text.replace(repr(US_ROM_MD5), repr(digest(rom)))
+    for a in US_ASSETS:
+        data = b"".join(rom[s.offset : s.offset + s.length] for s in a.slices)
+        text = text.replace(repr(a.md5), repr(digest(data)))
+    script = tmp_path / "binextract-us.py"
+    script.write_text(text)
+
+    subprocess.run(  # noqa: S603 -- the just-written, fully-controlled script
+        [sys.executable, str(script), "--us-rom", str(rom_path)],
+        check=True,
+        capture_output=True,
+    )
+    for a in US_ASSETS:
+        out = tmp_path / "bin" / "gfx" / a.filename
+        expected = b"".join(
+            rom[s.offset : s.offset + s.length] for s in a.slices
+        )
+        assert out.read_bytes() == expected
 
 
 def test_ensure_anchors_labels_bare_lines_with_pc() -> None:

@@ -14,9 +14,10 @@ every untouched unit round-tripped byte-for-byte.
 
 The relocated code is pulled *by name* from the US/JP disassembly; the binary
 assets (font, graphics, palette) are US-ROM byte slices ``incbin``\\ 'd from
-``english/`` (regenerated on the target by ``binextract-us.py``).
-Each subsystem is self-contained -- its constants, helpers, and edits live in
-its own function -- so there is nothing file-wide to trace through.
+``bin/gfx/`` (alongside the base disassembly's own binaries there; regenerated
+on the target by ``binextract-us.py``, see :mod:`us_assets`). Each subsystem
+is self-contained -- its constants, helpers, and edits live in its own
+function -- so there is nothing file-wide to trace through.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
+from . import us_assets
 from .graft import Relocation, bank_header, mirror, require_start, substitute
 from .snes_assembly_parser import (
     Assembly,
@@ -37,7 +39,8 @@ from .snes_assembly_parser import (
     Rom,
     datas,
     dbr_trampolines,
-    free_block,
+    free_space,
+    incbin_line,
     instructions,
     note,
     notes,
@@ -45,6 +48,11 @@ from .snes_assembly_parser import (
 
 USDASM = Path("../usdasm")
 JPDASM = Path("../jpdasm")
+
+#: Rom.write()'s default padbyte_threshold: a free-ROM gap over this many
+#: bytes is filled with a single padbyte/pad jump instead of explicit db $FF
+#: rows. 0 disables padbyte entirely (always explicit rows).
+DEFAULT_PADBYTE_THRESHOLD = 128
 
 
 @dataclass(frozen=True)
@@ -264,10 +272,19 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
         shared=THEFONT_LABELS,
         changes=changes,
     )
-    # Our VWF text font (font.2bpp); a raw blob (TheFont/TheFont_end stay bare,
-    # shared), read by the engine and the bank_00 upload.
+    # Our VWF text font (us_font.2bpp); a raw blob (TheFont/TheFont_end stay
+    # bare, shared), read by the engine and the bank_00 upload.
     relocation.place(
-        'TheFont:\n    incbin "english/font.2bpp"\nTheFont_end:',
+        Assembly(
+            [
+                note("TheFont:"),
+                incbin_line(
+                    "bin/gfx/us_font.2bpp",
+                    us_assets.asset("us_font.2bpp").size,
+                ),
+                note("TheFont_end:"),
+            ]
+        ),
         0x208000,
         "Our VWF text font (font.2bpp); read by the bank_00 upload.",
         namespace=False,
@@ -577,7 +594,11 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
 
 
 def file_select(
-    sources: Sources, *, changes: bool, save_compat: bool
+    sources: Sources,
+    *,
+    changes: bool,
+    save_compat: bool,
+    padbyte_threshold: int,
 ) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry. Pulled
     whole by recursion from the entry points; a few come from JP for the
@@ -879,7 +900,9 @@ def file_select(
             msg = f"file_select: US mirror overlap at {name}"
             raise ValueError(msg)
         if target > pc:
-            us_region += free_block(pc, target - pc)
+            us_region += free_space(
+                pc, target - pc, padbyte_threshold=padbyte_threshold
+            )
             pc = target
         us_region += seg.lines
         pc += width(seg)
@@ -904,7 +927,10 @@ def file_select(
     if first_mirror < low_end:
         msg = "file_select: low region overruns the US mirror start"
         raise ValueError(msg)
-    bank = low + free_block(low_end, first_mirror - low_end) + us_region + tail
+    bridge = free_space(
+        low_end, first_mirror - low_end, padbyte_threshold=padbyte_threshold
+    )
+    bank = low + bridge + us_region + tail
 
     relocation = Relocation(
         hooked=tuple(sorted(hooks)), carried=carried, changes=changes
@@ -924,12 +950,12 @@ def graphics(*, changes: bool) -> Relocation:
     background ``GFX_39``). Binary US-ROM slices, ``incbin``\\ 'd; each claims
     its freed JP name so the game's tables reach the US art.
     """
-    # (JP sheet name, its US-ROM slice, extracted into english/). Packed from
-    # $268000; referenced by symbol, so the exact address is asar's job.
+    # (JP sheet name, its US-ROM slice under bin/gfx/). Packed from $268000;
+    # referenced by symbol, so the exact address is asar's job.
     sheets = (
-        ("GFX_DC", "gfx_dc.2bppc"),  # US menu / file-select font sheet ($69)
-        ("GFX_DD", "gfx_dd.2bppc"),  # US menu / file-select font sheet ($6A)
-        ("GFX_39", "gfx_39.3bppc"),  # US file-select "linoleum" bg ($39)
+        ("GFX_DC", "us_gfx_dc.2bppc"),  # US menu/file-select font ($69)
+        ("GFX_DD", "us_gfx_dd.2bppc"),  # US menu/file-select font ($6A)
+        ("GFX_39", "us_gfx_39.3bppc"),  # US file-select "linoleum" bg ($39)
     )
     # Why each freed JP sheet is dead (annotates the base definition).
     dead_notes = {
@@ -947,16 +973,22 @@ def graphics(*, changes: bool) -> Relocation:
             "data stays live via GFX_71.",
         ),
     }
-    body = "\n\n".join(
-        f'{name}:\n    incbin "english/{asset}"' for name, asset in sheets
-    )
+    lines: list[Line] = []
+    for name, filename in sheets:
+        lines.append(note(f"{name}:"))
+        lines.append(
+            incbin_line(f"bin/gfx/{filename}", us_assets.asset(filename).size)
+        )
+        lines.append(note(""))
     relocation = Relocation(
         hooked=tuple(name for name, _ in sheets),
         hook_notes=dead_notes,
         changes=changes,
     )
     relocation.place(
-        body, 0x268000, "US graphics sheets (menu/HUD + file-select)."
+        Assembly(lines[:-1]),
+        0x268000,
+        "US graphics sheets (menu/HUD + file-select).",
     )
     return relocation
 
@@ -967,7 +999,7 @@ def file_select_palette(*, changes: bool) -> Relocation:
     -- not sourced from either disassembly, so it is full-only; see
     ``resources/usfs_palette_load.asm``) runs the stock US load and then
     overlays those four US palettes from ``USFS_Palette`` (a plain US-ROM
-    ``PaletteData`` byte slice, ``incbin``\\ 'd from ``english/usfs_pal.bin``
+    ``PaletteData`` byte slice, ``incbin``\\ 'd from ``bin/gfx/us_palette.bin``
     -- present in both builds, like the graft's other raw asset extractions).
     ``file_select`` repoints the one ``JSL`` at it. Keeping all four palettes
     here (not filling JP's empty ``owanim_00`` in bank_1B) keeps every US
@@ -976,23 +1008,26 @@ def file_select_palette(*, changes: bool) -> Relocation:
     through the stock load anyway.
     """
     relocation = Relocation(changes=changes)
-    body = ""
+    lines: list[Line] = []
     if changes:
-        code = Assembly.from_content(
-            _resource_lines("usfs_palette_load.asm")
-        ).ensure_anchors()
-        # namespace=False below keeps this bare (file_select()'s repoint
-        # references this exact name); render it ourselves at this piece's
-        # org so its #_ anchors are correct without going through the (here,
-        # skipped) EN_-namespacing render path.
-        body = code.render(0x278000) + "\n\n"
-    body += (
-        "; Four US file-select palettes (colors 1-7 each), CGRAM-row order"
-        " 5, 7, 9, 11.\n"
-        'USFS_Palette:\n    incbin "english/usfs_pal.bin"'
-    )
+        lines += (
+            Assembly.from_content(_resource_lines("usfs_palette_load.asm"))
+            .ensure_anchors()
+            .lines
+        )
+        lines.append(note(""))
+    lines += [
+        note(
+            "; Four US file-select palettes (colors 1-7 each), CGRAM-row"
+            " order 5, 7, 9, 11."
+        ),
+        note("USFS_Palette:"),
+        incbin_line(
+            "bin/gfx/us_palette.bin", us_assets.asset("us_palette.bin").size
+        ),
+    ]
     relocation.place(
-        body,
+        Assembly(lines),
         0x278000,
         "file-select US palette overlay + data.",
         namespace=False,
@@ -1177,7 +1212,12 @@ def patch_main_asm(english: Rom) -> None:
 
 
 def build(
-    *, usdasm: Path, jpdasm: Path, changes: bool, save_compat: bool = True
+    *,
+    usdasm: Path,
+    jpdasm: Path,
+    changes: bool,
+    save_compat: bool = True,
+    padbyte_threshold: int = DEFAULT_PADBYTE_THRESHOLD,
 ) -> Rom:
     """Assemble the whole English program as one editable :class:`Rom`.
 
@@ -1188,7 +1228,10 @@ def build(
     into ``english``, the base banks are hooked to reach them (unless
     ``changes`` is off, the change-free baseline), and ``main.asm`` is wired.
     Writing it back out -- base banks hooked in place, graft banks beside them
-    -- is the caller's :meth:`Rom.write`. Player names are a 6-character field.
+    -- is the caller's :meth:`Rom.write` (pass it the *same*
+    ``padbyte_threshold``: this only covers a subsystem's own internal gaps,
+    e.g. ``file_select``'s low-region/US-mirror bridge -- write() independently
+    fills every *bank-level* gap). Player names are a 6-character field.
     ``save_compat`` adds the boot-time migrator that converts US / vanilla-
     Japanese save slots to our format (the default).
     """
@@ -1201,7 +1244,12 @@ def build(
         font_upload(sources, changes=changes),
         credits_bank(sources, changes=changes),
         item_menu(sources, changes=changes),
-        file_select(sources, changes=changes, save_compat=save_compat),
+        file_select(
+            sources,
+            changes=changes,
+            save_compat=save_compat,
+            padbyte_threshold=padbyte_threshold,
+        ),
         graphics(changes=changes),
         file_select_palette(changes=changes),
     ]
@@ -1239,14 +1287,27 @@ def main() -> None:
         default=Path(),
         help="jpdasm fork to write the whole English program into",
     )
+    parser.add_argument(
+        "--padbyte-threshold",
+        type=int,
+        default=DEFAULT_PADBYTE_THRESHOLD,
+        help="free-ROM gaps over this many bytes use a padbyte/pad jump "
+        f"instead of explicit db $FF rows; 0 disables padbyte entirely, "
+        f"always explicit rows (default: {DEFAULT_PADBYTE_THRESHOLD})",
+    )
     args = parser.parse_args()
     english = build(
         usdasm=args.usdasm,
         jpdasm=args.jpdasm,
         changes=not args.baseline,
         save_compat=not args.no_save_compatibility,
+        padbyte_threshold=args.padbyte_threshold,
     )
-    generated = english.write(args.out, bank_header=bank_header)
+    generated = english.write(
+        args.out,
+        bank_header=bank_header,
+        padbyte_threshold=args.padbyte_threshold,
+    )
     mode = "baseline" if args.baseline else "with changes"
     print(
         f"wrote English program ({mode}): "

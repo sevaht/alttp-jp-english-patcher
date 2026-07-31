@@ -158,9 +158,10 @@ def test_write_roundtrips_units_preserves_subdirs_and_banks(
 
     class _Piece:
         org = 0x208000
+        size = 1  # RTL
 
         def render(self) -> str:
-            return "; relocated\norg $208000\nEN_Foo:\n#_208000: RTL\n"
+            return "; relocated\nEN_Foo:\n#_208000: RTL\n"
 
     class _Reloc:
         def placements(self) -> list[Placed]:
@@ -174,10 +175,13 @@ def test_write_roundtrips_units_preserves_subdirs_and_banks(
     assert (
         out / "resources" / "data.asm"
     ).read_text() == "Data:\n#_038000: db $01"
-    # the added piece lands in a generated bank named for its org's bank
+    # the added piece lands in a generated bank named for its org's bank, with
+    # exactly one org (the bank's base) -- write() supplies it, the piece does
+    # not -- and the rest of the bank explicitly filled (no gap left implicit)
     generated = (out / "bank_20.asm").read_text()
     assert "; relocated" in generated
-    assert "org $208000" in generated
+    assert generated.count("org $208000") == 1
+    assert "NULL_208001:" in generated  # the trailing free space, filled
 
 
 def test_incsrc_cycle_detected(tmp_path: Path) -> None:

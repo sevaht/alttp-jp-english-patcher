@@ -37,12 +37,12 @@ Extraction of the ROM-derived binaries is a separate, one-time step (see
 
 ```sh
 # 1. put both ROMs in this directory (see Binaries)
-python3 binextract.py          # extract bin/* (JP) and english/* (US)
+python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
 ./build_english_rom.sh         # -> alttp-english.sfc   (Linux/macOS)
 ```
 
 On Windows, run `binextract.py`, then `_build.bat` (or `make`). A correct
-default build has MD5 `3fa0ee9b909ac76ef444314cd45c999f`.
+default build has MD5 `fa28c040306b075c76c1b5c1ede30553`.
 
 ## Binaries
 
@@ -57,12 +57,13 @@ Then run `python3 binextract.py`, which drives both extractors:
 
 * `binextract-jp.py` — the base disassembly's own extractor: the JP graphics and
   audio binaries under `bin/` (from `alttp.sfc`).
-* `binextract-us.py` — the English font/menu assets under `english/` (from
-  `alttp-us.sfc`): the US variable-width font and the file-select font/graphics/
-  palette slices the graft repoints to.
+* `binextract-us.py` — the English font/menu assets, also under `bin/gfx/`
+  (`us_*` files, alongside the JP ones there; from `alttp-us.sfc`): the US
+  variable-width font and the file-select font/graphics/palette slices the
+  graft repoints to.
 
-Nothing copyrighted is committed here — everything under `bin/` and `english/`
-is regenerated from your ROMs.
+Nothing copyrighted is committed here — everything under `bin/` is
+regenerated from your ROMs.
 
 An accurate assembly of the underlying JP 1.0 base has the following checksums:
 * Internal (complement): `CDC8` (`3237`)

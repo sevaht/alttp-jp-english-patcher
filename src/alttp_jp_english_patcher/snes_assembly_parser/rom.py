@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from .assembly import Assembly
+from .hooking import free_space
 from .source import block_end
 
 if TYPE_CHECKING:
@@ -33,17 +34,26 @@ if TYPE_CHECKING:
     from .patcher import Patcher
     from .source import Block, Pool
 
+#: LoROM's fixed per-bank ROM window: banks $00-$7D/$80-$FD map ROM only at
+#: $xx8000-$xxFFFF (the low half is WRAM mirror/hardware registers), so this
+#: is where every generated/expanded bank's content -- and its single ``org``
+#: -- starts, and $xxFFFF is always its last valid byte.
+LOROM_BANK_OFFSET = 0x8000
+LOROM_BANK_SIZE = 0x8000
+
 
 class Placed(Protocol):
     """A body pinned at a ROM address (e.g. ``graft.Placement``).
 
-    ``org`` gives the absolute address (so :meth:`Rom.write` can group pieces
-    by bank); :meth:`render` emits the piece's own source text (the ``org``
-    directive, an optional note, and the body) -- so the emitted form lives
-    with the piece, not here.
+    ``org`` gives the absolute address and ``size`` the body's byte count (so
+    :meth:`Rom.write` can group pieces by bank and compute the gap to the next
+    one); :meth:`render` emits the piece's own source text (a note + the body,
+    *without* an ``org`` -- :meth:`Rom.write` puts one ``org`` at each bank's
+    base and keeps every piece's addressing implicit from there).
     """
 
     org: int
+    size: int
 
     def render(self) -> str: ...
 
@@ -431,9 +441,55 @@ class Rom:
                     )
         return regions
 
+    def _bank_text(
+        self, bank: int, pieces: list[Placed], *, padbyte_threshold: int
+    ) -> str:
+        """One bank's full text: a single leading ``org``, then every piece
+        in address order with every gap (leading, between pieces, trailing)
+        explicitly filled -- never another ``org`` to skip over one."""
+        name = f"bank_{bank:02X}.asm"
+        base = (bank << 16) | LOROM_BANK_OFFSET
+        end = base + LOROM_BANK_SIZE  # one past the bank's last valid byte
+        segments: list[str] = []
+        pc = base
+        for piece in pieces:
+            if piece.org < pc:
+                msg = (
+                    f"{name}: piece at ${piece.org:06X} overlaps prior "
+                    f"content (PC was ${pc:06X})"
+                )
+                raise ValueError(msg)
+            if piece.org > pc:
+                segments.append(
+                    self._free_space_text(
+                        pc, piece.org - pc, padbyte_threshold
+                    )
+                )
+            segments.append(piece.render())
+            pc = piece.org + piece.size
+        if pc > end:
+            msg = f"{name}: content runs past the bank end (${pc - 1:06X})"
+            raise ValueError(msg)
+        if pc < end:
+            segments.append(
+                self._free_space_text(pc, end - pc, padbyte_threshold)
+            )
+        return f"org ${base:06X}\n" + "\n\n".join(segments)
+
+    @staticmethod
+    def _free_space_text(
+        address: int, size: int, padbyte_threshold: int
+    ) -> str:
+        lines = free_space(address, size, padbyte_threshold=padbyte_threshold)
+        return "\n".join(str(line) for line in lines)
+
     # ---- output ----
     def write(
-        self, out_dir: Path, *, bank_header: Callable[[int], str] | None = None
+        self,
+        out_dir: Path,
+        *,
+        bank_header: Callable[[int], str] | None = None,
+        padbyte_threshold: int = 128,
     ) -> list[str]:
         """Write the program into ``out_dir``; return the generated banks.
 
@@ -442,7 +498,14 @@ class Rom:
         file's directory), so a subdir like ``resources/`` is preserved and an
         untouched unit round-trips byte-for-byte. The pieces from :meth:`add`
         are grouped by ROM bank (``org >> 16``) into fresh ``bank_XX.asm``
-        files beside the base banks; wiring them into ``main.asm`` (the
+        files beside the base banks -- one ``org`` at the bank's base, then
+        every piece in address order with every gap (leading, between pieces,
+        trailing) explicitly filled as a labelled ``NULL_``/``FREE ROM`` span
+        (matching the base disassembly's own convention of accounting for
+        every byte, never an ``org`` mid-file to skip over one). A gap over
+        ``padbyte_threshold`` bytes is filled with a single ``padbyte``/``pad``
+        jump instead of a wall of explicit rows; ``<= 0`` disables that (always
+        explicit rows). Wiring the generated files into ``main.asm`` (the
         ``incsrc`` lines and any ROM padding) is the driver's job, as that
         block is program-specific. ``bank_header(bank)`` names the header for a
         generated bank (a plain one by default). Returns the generated
@@ -457,8 +520,10 @@ class Rom:
         generated: list[str] = []
         for bank in sorted(by_bank):
             name = f"bank_{bank:02X}.asm"
-            blocks = sorted(by_bank[bank], key=lambda piece: piece.org)
-            body = "\n\n".join(piece.render() for piece in blocks)
+            pieces = sorted(by_bank[bank], key=lambda piece: piece.org)
+            body = self._bank_text(
+                bank, pieces, padbyte_threshold=padbyte_threshold
+            )
             header = (
                 bank_header(bank)
                 if bank_header

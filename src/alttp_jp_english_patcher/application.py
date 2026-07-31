@@ -31,9 +31,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import user_cache_path, verify_base
-from .generate import build
+from .generate import DEFAULT_PADBYTE_THRESHOLD, build
 from .gitignore import patch as patch_gitignore
 from .graft import bank_header
+from .us_assets import render_binextract_us
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -53,12 +54,10 @@ _SOURCES = {
 }
 
 # bundled deploy artifacts -> written verbatim into the target fork.
-_DEPLOY_FILES = (
-    "binextract-us.py",
-    "binextract.py",
-    "build_english_rom.sh",
-    "README.md",
-)
+# binextract-us.py is NOT here: it is generated (see _deploy_tooling), not a
+# static file, so its (offset, size, md5) data can never drift from what
+# generate.py's incbin sizing assumes -- both read us_assets.US_ASSETS.
+_DEPLOY_FILES = ("binextract.py", "build_english_rom.sh", "README.md")
 
 
 def _clone(label: str, dest: Path) -> None:
@@ -120,6 +119,7 @@ def _deploy_tooling(target: Path) -> None:
     root = resources.files("alttp_jp_english_patcher").joinpath("deploy")
     for name in _DEPLOY_FILES:
         (target / name).write_bytes(root.joinpath(name).read_bytes())
+    (target / "binextract-us.py").write_text(render_binextract_us())
     (target / "build_english_rom.sh").chmod(0o755)
 
 
@@ -198,6 +198,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--jpdasm", type=Path, help="JP disassembly checkout (default: cached)"
     )
+    parser.add_argument(
+        "--padbyte-threshold",
+        type=int,
+        default=DEFAULT_PADBYTE_THRESHOLD,
+        help="free-ROM gaps over this many bytes use a padbyte/pad jump "
+        "instead of explicit db $FF rows; 0 disables padbyte entirely, "
+        f"always explicit rows (default: {DEFAULT_PADBYTE_THRESHOLD})",
+    )
     return parser
 
 
@@ -225,8 +233,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         jpdasm=jpdasm,
         changes=not args.baseline,
         save_compat=not args.no_save_compatibility,
+        padbyte_threshold=args.padbyte_threshold,
     )
-    english.write(target, bank_header=bank_header)
+    english.write(
+        target,
+        bank_header=bank_header,
+        padbyte_threshold=args.padbyte_threshold,
+    )
 
     print("==> deploying build tooling")
     _deploy_tooling(target)

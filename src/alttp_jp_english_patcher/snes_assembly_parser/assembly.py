@@ -28,6 +28,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from .hooking import NULL_PREFIX, byte_rows
 from .sizing import AnchorSizer, Sizer, computed_size, data_size
 from .source import (
     Block,
@@ -99,6 +100,15 @@ def data(text: str) -> Line:
 def datas(texts: Iterable[str]) -> list[Line]:
     """A list of :func:`data` lines (each auto-sized and anchored)."""
     return [data(text) for text in texts]
+
+
+def incbin_line(path: str, size: int) -> Line:
+    """An ``incbin "path"`` line, anchored -- ``size`` is the caller's job (an
+    included binary's byte count is unknowable to the sizer, which only
+    understands opcodes/data directives, not the file on disk)."""
+    line = Line.from_line(f'incbin "{path}"')
+    line.size = size
+    return _ensure_anchor(line)
 
 
 def note(text: str) -> Line:
@@ -324,8 +334,11 @@ class Assembly:
         Each live anchor is re-stamped to the running PC; the PC advances by
         every line's size. ``org`` defaults to the assembly's own start
         address, so an unedited assembly round-trips. A gap marker
-        (``Line.org_gap``) advances the PC and emits an ``org`` instead of its
-        own text (reserving space a dropped block held).
+        (``Line.org_gap``) advances the PC and emits an explicit ``NULL_``
+        ``db $FF`` fill for it (reserving space a dropped block held) -- the
+        preceding comment (see :meth:`concat`) already explains why, so no
+        redundant header here; this way there is nothing to skip over,
+        matching the base disassembly's every-byte-explicit convention.
         """
         pc = self.start_address if org is None else org
         if pc is None:
@@ -333,8 +346,12 @@ class Assembly:
         out: list[str] = []
         for line in self.lines:
             if line.org_gap:
+                fill = [
+                    Line.from_line(f"{NULL_PREFIX}{pc:06X}:"),
+                    *byte_rows(pc, [0xFF] * line.size),
+                ]
+                out.append("\n".join(str(gap_line) for gap_line in fill))
                 pc += line.size
-                out.append(f"org ${pc:06X}")
                 continue
             if line.is_address_label:
                 line.set_address(pc)
@@ -608,8 +625,8 @@ class Assembly:
         names = ", ".join(dead) if dead else "dead/free data"
         marker = [
             Line.from_line(
-                f"; +{gap_bytes} byte gap: dropped {names}; the org below "
-                "reserves that space so the"
+                f"; +{gap_bytes} byte gap: dropped {names}; the NULL_ fill"
+                " below reserves that space so the"
             ),
             Line.from_line(
                 "; following blocks keep their original offset (dropping "

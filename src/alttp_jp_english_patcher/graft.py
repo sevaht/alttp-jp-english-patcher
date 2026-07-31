@@ -26,10 +26,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .snes_assembly_parser import Assembly
+from .snes_assembly_parser import Assembly, HybridSizer, Line
 
 #: US -> English address offset (+$20 banks, i.e. +2 MB / 0x200000).
 MIRROR = 0x200000
@@ -54,6 +52,22 @@ def require_start(body: Assembly) -> int:
         msg = "relocated body has no address anchor"
         raise ValueError(msg)
     return start
+
+
+def _text_width(text: str) -> int:
+    """Total byte size of already-rendered ``text`` (real ``#_`` anchors
+    throughout), for gap math against a piece with no live :class:`Assembly`
+    to measure directly (a raw string :meth:`Relocation.place` body).
+
+    Uses :class:`~.snes_assembly_parser.HybridSizer` rather than the
+    (anchor-only) default: a block's last anchored line has no following
+    anchor to measure against, and anchor adjacency alone would size it 0
+    unless it happens to be a data directive -- the hybrid's computed-size
+    fallback covers a trailing instruction (``RTL``, ``JML ...``) correctly.
+    """
+    lines = [Line.from_line(source) for source in text.split("\n")]
+    HybridSizer().size_all(lines)
+    return sum(line.size for line in lines)
 
 
 def substitute(text: str, old: str, new: str, count: int = 1) -> str:
@@ -141,16 +155,26 @@ def en_namespace(
 
 @dataclass
 class Placement:
-    """A pinned chunk of output: an ``org`` plus its body, with a leading
-    note."""
+    """A pinned chunk of output: a sized body at an ``org``, with a leading
+    note.
+
+    ``size`` is the body's total byte count (computed by
+    :meth:`Relocation.place` -- from an :class:`Assembly` body directly, or by
+    re-sizing a raw-string body), so a bank writer (:meth:`Rom.write`) can
+    compute the gap to the next piece without re-parsing.
+    """
 
     org: int
     body: str
     note: str = ""
+    size: int = 0
 
     def render(self) -> str:
+        """Note + body, *without* an ``org`` line -- a bank groups many
+        pieces under a single ``org`` (see :meth:`Rom.write`); this is for a
+        piece considered on its own."""
         head = f"; {self.note}\n" if self.note else ""
-        return f"{head}org ${self.org:06X}\n{self.body.rstrip()}\n"
+        return f"{head}{self.body.rstrip()}\n"
 
 
 def bank_header(bank: int) -> str:
@@ -231,7 +255,7 @@ class Relocation:
     #: emitted -- the relocated names stay purely ``EN_``, so no unmodified
     #: caller is redirected.
     changes: bool = True
-    _pieces: list[tuple[int, Assembly | str, str, bool]] = field(
+    _pieces: list[tuple[int, Assembly | str, str, bool, int]] = field(
         default_factory=list
     )
 
@@ -250,8 +274,18 @@ class Relocation:
         body. With ``namespace=False`` the piece is emitted verbatim and its
         symbols are left out of the shared name set -- for a raw font blob or a
         hand-written stub already in its final (``EN_``/hook-aliased) form.
+
+        The body's byte size is computed here (from its lines directly if it
+        is an :class:`~snes_assembly_parser.Assembly`, else by re-sizing the
+        text) and carried on the resulting :class:`Placement`, for
+        :meth:`Rom.write`'s gap accounting.
         """
-        self._pieces.append((org, body, note, namespace))
+        size = (
+            sum(line.size for line in body.lines)
+            if isinstance(body, Assembly)
+            else _text_width(body)
+        )
+        self._pieces.append((org, body, note, namespace, size))
         return self
 
     def place_mirror(
@@ -281,14 +315,15 @@ class Relocation:
                 body if isinstance(body, str) else body.render(org),
                 note,
                 should_namespace,
+                size,
             )
-            for org, body, note, should_namespace in self._pieces
+            for org, body, note, should_namespace, size in self._pieces
         ]
         # Only namespaced pieces contribute to (and receive) the shared rename;
         # verbatim pieces already carry their final symbols.
         combined = "\n".join(
             text
-            for _, text, _, should_namespace in rendered
+            for _, text, _, should_namespace, _ in rendered
             if should_namespace
         )
         names = sublabel_names(combined, collect_names(combined))
@@ -304,6 +339,7 @@ class Relocation:
                     else text
                 ),
                 note,
+                size,
             )
-            for org, text, note, should_namespace in rendered
+            for org, text, note, should_namespace, size in rendered
         ]
