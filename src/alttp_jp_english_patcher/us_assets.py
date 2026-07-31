@@ -20,6 +20,8 @@ alongside jpdasm's own JP-ROM-derived files in the same directory.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import resources
+from string import Template
 
 #: The US ROM this whole module's offsets/sizes/md5s were measured against.
 US_ROM_MD5 = "608c22b8ff930c62dc2de54bcd6eba72"
@@ -106,110 +108,17 @@ def asset(filename: str) -> UsAsset:
     return _BY_NAME[filename]
 
 
-_TEMPLATE = '''\
-#!/usr/bin/env python3
-"""
-binextract-us.py -- regenerate the US ROM-derived font/menu assets for the
-English translation from your own US ROM. Nothing copyrighted is committed to
-this repo; the `binextract.py` stub runs this (and binextract-jp.py) to
-produce the `bin/gfx/us_*` files.
-
-    python3 binextract-us.py              # uses ./alttp-us.sfc
-    python3 binextract-us.py --us-rom US.sfc
-
-You need the US ROM (md5 {us_rom_md5}), by default named `alttp-us.sfc` in
-this directory. (The JP 1.0 binaries come from binextract-jp.py.)
-All outputs are derived from the US ROM, written under bin/gfx/ (alongside
-the base disassembly's own JP-ROM-derived files there):
-{asset_list}
-Every output is a plain ROM byte slice -- NO emulator is used. Each is checked
-against a known md5; if any check fails the script stops loudly.
-
-GENERATED from alttp_jp_english_patcher/us_assets.py -- do not hand-edit;
-change that table and redeploy to regenerate this file.
-"""
-import argparse, hashlib, os, sys
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "bin", "gfx")
-
-US_ROM_MD5 = {us_rom_md5!r}
-
-# (filename, ((offset, length), ...), expected md5, comment)
-ASSETS = (
-{asset_table}
-)
-
-
-def md5(b):
-    return hashlib.md5(b).hexdigest()
-
-
-def die(msg):
-    print("ERROR:", msg, file=sys.stderr)
-    sys.exit(1)
-
-
-def check_rom(path):
-    if not path or not os.path.isfile(path):
-        die(f"US ROM not found: {{path!r}}")
-    got = md5(open(path, "rb").read())
-    if got != US_ROM_MD5:
-        die(
-            f"US ROM md5 mismatch: got {{got}}, expected {{US_ROM_MD5}}\\n"
-            f"       (this must be the US release)"
-        )
-    print(f"  US ROM ok ({{got}})")
-
-
-def extract(us_bytes, name, slices, want, comment):
-    data = b"".join(
-        us_bytes[offset : offset + length] for offset, length in slices
+def _load_template() -> Template:
+    """The ``binextract-us.py`` source template -- a bundled package resource
+    (``.py.template``, so its name makes clear it is not itself runnable
+    Python), filled in by :func:`render_binextract_us`.
+    """
+    text = (
+        resources.files("alttp_jp_english_patcher")
+        .joinpath("resources", "binextract_us.py.template")
+        .read_text(encoding="utf-8")
     )
-    got = md5(data)
-    out = os.path.join(OUT, name)
-    open(out, "wb").write(data)
-    ok = got == want
-    status = "OK" if ok else "MD5 MISMATCH"
-    print(f"  bin/gfx/{{name:<16}} {{got}}  [{{status}}]  # {{comment}}")
-    return ok
-
-
-def main():
-    ap = argparse.ArgumentParser(
-        description="extract the US ROM-derived font/menu assets for the"
-        " English build"
-    )
-    ap.add_argument(
-        "--us-rom",
-        default=os.path.join(HERE, "alttp-us.sfc"),
-        help="US ROM (default: ./alttp-us.sfc)",
-    )
-    a = ap.parse_args()
-
-    a.us_rom = os.path.abspath(a.us_rom)
-    print("Validating ROM:")
-    check_rom(a.us_rom)
-    os.makedirs(OUT, exist_ok=True)
-
-    print("Extracting assets:")
-    us = open(a.us_rom, "rb").read()
-    ok = True
-    for name, slices, want, comment in ASSETS:
-        ok &= extract(us, name, slices, want, comment)
-
-    if not ok:
-        die(
-            "one or more assets did not match the expected md5.\\n"
-            "       Double-check that your US ROM matches the md5 at the"
-            " top of this script."
-        )
-    print("\\nUS assets extracted and verified.")
-
-
-if __name__ == "__main__":
-    main()
-'''
+    return Template(text)
 
 
 def render_binextract_us() -> str:
@@ -232,6 +141,8 @@ def render_binextract_us() -> str:
         )
         for a in US_ASSETS
     )
-    return _TEMPLATE.format(
-        us_rom_md5=US_ROM_MD5, asset_list=asset_list, asset_table=asset_table
+    return _load_template().substitute(
+        us_rom_md5=repr(US_ROM_MD5),
+        asset_list=asset_list,
+        asset_table=asset_table,
     )

@@ -11,8 +11,10 @@ disassembly's support files (``asarmon.exe``, the reference ``.asm``, ``bin/``
 dirs, ``binextract.py`` -> ``binextract-jp.py``) into the target; writes the
 whole English program over it (base banks hooked in place, graft banks beside
 them, ``main.asm`` wired); drops in the build tooling (``binextract-us.py`` +
-the ``binextract.py`` stub + build script + README) and the ``.gitignore``; and
-copies the two ROMs into place (``alttp.sfc`` / ``alttp-us.sfc``) if given.
+the ``binextract.py`` stub + ``_build.sh`` + README, plus English-targeting
+``Makefile`` / ``_build.bat`` overwriting the JP-only pristine ones) and the
+``.gitignore``; and copies the two ROMs into place (``alttp.sfc`` /
+``alttp-us.sfc``) if given.
 
 The two disassembly *sources* are plain git checkouts, cloned on demand into
 the platformdirs user cache (see
@@ -57,7 +59,18 @@ _SOURCES = {
 # binextract-us.py is NOT here: it is generated (see _deploy_tooling), not a
 # static file, so its (offset, size, md5) data can never drift from what
 # generate.py's incbin sizing assumes -- both read us_assets.US_ASSETS.
-_DEPLOY_FILES = ("binextract.py", "build_english_rom.sh", "README.md")
+#
+# Makefile / _build.bat ARE here even though jpdasm ships its own: those
+# pristine copies build alttp_reasm.sfc with the checksum fix off (they
+# reassemble unmodified JP 1.0), so they're overwritten with versions that
+# build alttp-english.sfc with the checksum fix on.
+_DEPLOY_FILES = (
+    "binextract.py",
+    "_build.sh",
+    "Makefile",
+    "_build.bat",
+    "README.md",
+)
 
 
 def _clone(label: str, dest: Path) -> None:
@@ -100,9 +113,10 @@ def _populate_from_jpdasm(jpdasm: Path, target: Path) -> None:
 
     Copies everything except its git metadata and its own ``binextract.py``
     (which becomes ``binextract-jp.py``); the generated ``.asm`` files are
-    overwritten by :meth:`Rom.write` right after. ``asarmon.exe``, the
-    reference ``.asm``, the ``bin/`` directory scaffolding, ``Makefile`` /
-    ``_build.bat``, and ``LICENSE`` come along so the target is a
+    overwritten by :meth:`Rom.write` right after, and ``Makefile`` /
+    ``_build.bat`` by :func:`_deploy_tooling` right after that (see
+    ``_DEPLOY_FILES``). ``asarmon.exe``, the reference ``.asm``, the ``bin/``
+    directory scaffolding, and ``LICENSE`` come along so the target is a
     self-contained buildable fork.
     """
     ignore = shutil.ignore_patterns(
@@ -120,7 +134,7 @@ def _deploy_tooling(target: Path) -> None:
     for name in _DEPLOY_FILES:
         (target / name).write_bytes(root.joinpath(name).read_bytes())
     (target / "binextract-us.py").write_text(render_binextract_us())
-    (target / "build_english_rom.sh").chmod(0o755)
+    (target / "_build.sh").chmod(0o755)
 
 
 def _place_roms(target: Path, args: argparse.Namespace) -> None:
@@ -254,5 +268,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("\nDone.\n")
     print(f"In {target} run these commands:")
     print("  python3 binextract.py")
-    print("  ./build_english_rom.sh")
+    print("  ./_build.sh          (or: make / _build.bat)")
     return 0

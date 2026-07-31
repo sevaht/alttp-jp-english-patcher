@@ -56,8 +56,29 @@ def test_deploy_files_are_bundled() -> None:
     # (offset, size, md5) data can never drift from generate.py's incbin
     # sizing -- both read the same table.
     root = resources.files("alttp_jp_english_patcher").joinpath("deploy")
-    for name in ("binextract.py", "build_english_rom.sh", "README.md"):
+    names = (
+        "binextract.py",
+        "_build.sh",
+        "Makefile",
+        "_build.bat",
+        "README.md",
+    )
+    for name in names:
         assert root.joinpath(name).is_file()
+
+
+def test_makefile_and_build_bat_target_the_english_rom() -> None:
+    # jpdasm's own Makefile/_build.bat reassemble unmodified JP 1.0 as
+    # alttp_reasm.sfc with the checksum fix off; our overrides must instead
+    # produce alttp-english.sfc with the checksum fixed (our ROM's contents
+    # differ from JP 1.0, so an unfixed checksum would be wrong).
+    root = resources.files("alttp_jp_english_patcher").joinpath("deploy")
+    for name in ("Makefile", "_build.bat"):
+        text = root.joinpath(name).read_text(encoding="utf-8")
+        assert "alttp-english.sfc" in text
+        assert "alttp_reasm.sfc" not in text
+        assert "--fix-checksum=on" in text
+        assert "--fix-checksum=off" not in text
 
 
 def test_render_binextract_us_is_valid_python() -> None:

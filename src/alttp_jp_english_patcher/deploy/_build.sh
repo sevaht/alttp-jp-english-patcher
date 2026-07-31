@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# build_english_rom.sh — assemble the English ROM (Linux/macOS equivalent of
-# _build.bat). This ONLY assembles; extract the ROM-derived binaries first:
+# _build.sh — assemble the English ROM (Linux/macOS equivalent of _build.bat;
+# `make` also works and now produces the same output). This ONLY assembles;
+# extract the ROM-derived binaries first:
 #
 #   1. place your two ROMs here:  alttp.sfc (JP 1.0)  and  alttp-us.sfc (US)
 #   2. python3 binextract.py       # extracts bin/gfx/* (JP + US), bin/brr/* (JP)
-#   3. ./build_english_rom.sh      # -> alttp-english.sfc
+#   3. ./_build.sh                 # -> alttp-english.sfc
 #
 set -euo pipefail
 cd "$(dirname "$0")"

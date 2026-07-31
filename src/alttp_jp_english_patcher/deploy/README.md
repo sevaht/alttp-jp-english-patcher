@@ -38,11 +38,12 @@ Extraction of the ROM-derived binaries is a separate, one-time step (see
 ```sh
 # 1. put both ROMs in this directory (see Binaries)
 python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
-./build_english_rom.sh         # -> alttp-english.sfc   (Linux/macOS)
+./_build.sh                    # -> alttp-english.sfc   (Linux/macOS)
 ```
 
-On Windows, run `binextract.py`, then `_build.bat` (or `make`). A correct
-default build has MD5 `fa28c040306b075c76c1b5c1ede30553`.
+On Windows, run `binextract.py`, then `_build.bat`. `make` also works on any
+platform with `asarmon` on `PATH`. All three produce `alttp-english.sfc`; a
+correct default build has MD5 `fa28c040306b075c76c1b5c1ede30553`.
 
 ## Binaries
 

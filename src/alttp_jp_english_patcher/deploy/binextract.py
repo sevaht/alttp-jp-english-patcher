@@ -25,7 +25,7 @@ def main() -> int:
     for script in ("binextract-jp.py", "binextract-us.py"):
         print(f"==> {script}")
         subprocess.run([sys.executable, str(HERE / script)], check=True)
-    print("\nAll binaries extracted. Build with ./build_english_rom.sh")
+    print("\nAll binaries extracted. Build with ./_build.sh (or make/_build.bat)")
     return 0
 
 
