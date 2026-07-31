@@ -121,6 +121,24 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
     )
     main = us.blocks_until("Message_Data")
     overflow = us.blocks_until("Message_DataExtra")
+    # CreateMessagePointers walks byte-by-byte until it reads a literal $FF
+    # (the table-end marker); in the US ROM this falls out for free since
+    # Message_DataExtra runs to the natural, $FF-padded end of its bank. Our
+    # relocated copy is pulled as just its own block (no trailing bank
+    # padding), and the free ROM after it in bank $23 is $00-filled -- so
+    # without an explicit terminator here, the scan runs past the real data
+    # and never finds $FF (in practice: an effectively endless loop at boot,
+    # since CreateMessagePointers runs once at startup). Needed
+    # unconditionally -- both the baseline and the full build carry the
+    # vanilla-preserved engine.
+    overflow.append(
+        datas(
+            [
+                "db $FF ; end of message table"
+                " (CreateMessagePointers terminator)"
+            ]
+        )
+    )
     decompress_hook = jp.address_of("DecompressFontGFX")
     masks_hook = jp.address_of("BuildSomeTextMasks")
 
@@ -601,33 +619,68 @@ def file_select(
         irq.append(instructions(["JML $00821B"]))
         return irq
 
+    def nop_fill(count: int, comment: str) -> list[Line]:
+        # Baseline stand-in for a full-only insertion: same byte count (NOP is
+        # 1 byte, harmless in straight-line code), so the routine's total size
+        # -- and every anchor after it -- matches the full build exactly.
+        return notes([f"; [ENG-FS] {comment}"]) + instructions(["NOP"] * count)
+
     def edit_initialize_gfx(block: Assembly) -> None:
         # JP FileSelect_InitializeGFX -> English (name-banner + BG3 setup).
-        block.delete("STZ.w $0AB6", until="JSL PaletteLoad_UnderworldSet")
-        block.insert_after(
-            "STA.w $0AA9",
-            instructions(["LDA.b #$06", "STA.w $0AB6", "STA.w $0710"]),
-        )
-        block.delete("LDA.b #$01", until="STA.w $0AB2")
-        block.insert_after(
-            "JSL PaletteLoad_OWBG3", instructions(["LDA.b #$00"])
-        )
-        block.insert_after(
-            "STA.w $0AA1", instructions(["LDA.b #$51", "STA.w $0AA2"])
-        )
+        # Each site is made byte-neutral between baseline/full (real edit vs.
+        # same-size NOP filler in baseline) so this routine's size -- and thus
+        # every later routine's address -- never depends on `changes`.
+        if changes:
+            block.delete("STZ.w $0AB6", until="JSL PaletteLoad_UnderworldSet")
+            block.insert_after(
+                "STA.w $0AA9",
+                instructions(["LDA.b #$06", "STA.w $0AB6", "STA.w $0710"]),
+            )
+        else:
+            # unedited site is 3 bytes; the full build's replacement is 8.
+            block.insert_after(
+                "STZ.w $0AB6",
+                nop_fill(5, "reserved: see FileSelect_InitializeGFX>0AB6"),
+            )
+        if changes:
+            block.delete("LDA.b #$01", until="STA.w $0AB2")
+            block.insert_after(
+                "JSL PaletteLoad_OWBG3", instructions(["LDA.b #$00"])
+            )
+        # (already byte-neutral: LDA.b #$01 (2) -> LDA.b #$00 (2); no baseline
+        # padding needed.)
+        if changes:
+            block.insert_after(
+                "STA.w $0AA1", instructions(["LDA.b #$51", "STA.w $0AA2"])
+            )
+        else:
+            block.insert_after(
+                "STA.w $0AA1",
+                nop_fill(5, "reserved: see FileSelect_InitializeGFX>0AA1"),
+            )
 
     def edit_erase(block: Assembly) -> None:
-        # JP NameFile_EraseSave -> English blank fill + flags.
-        block.delete("STZ.w $0B10", until="STZ.w $0B15")
-        block.insert_after("STA.w $0128", instructions(["STZ.w $0B10"]))
-        block.replace("LDA.b #$3E", "LDA.b #$83", count=1)
-        block.replace("LDA.w #$019C", "LDA.w #$01F0", count=1)
-        block.replace("LDA.w #$018C", "LDA.w #$00A9", count=1)
-        # widen: prepend two blank-writes so all 6 words ($3D5-$3DF) clear.
-        block.insert_before(
-            "STA.l $7003D9,X",
-            instructions(["STA.l $7003D5,X", "STA.l $7003D7,X"]),
-        )
+        # JP NameFile_EraseSave -> English blank fill + flags. Same
+        # byte-neutral-between-builds treatment as edit_initialize_gfx.
+        if changes:
+            block.delete("STZ.w $0B10", until="STZ.w $0B15")
+            block.insert_after("STA.w $0128", instructions(["STZ.w $0B10"]))
+            block.replace("LDA.b #$3E", "LDA.b #$83", count=1)
+            block.replace("LDA.w #$019C", "LDA.w #$01F0", count=1)
+            block.replace("LDA.w #$018C", "LDA.w #$00A9", count=1)
+        # (the STZ.w $0B10 move and the 3 replaces are already byte-neutral;
+        # no baseline padding needed for any of them.)
+        if changes:
+            # widen: prepend two blank-writes so all 6 words ($3D5-$3DF) clear.
+            block.insert_before(
+                "STA.l $7003D9,X",
+                instructions(["STA.l $7003D5,X", "STA.l $7003D7,X"]),
+            )
+        else:
+            block.insert_before(
+                "STA.l $7003D9,X",
+                nop_fill(8, "reserved: see NameFile_EraseSave>7003D9"),
+            )
 
     # Player name: widen the SRAM name to a contiguous 6-word field at $3D5
     # (ending just before the JP checksum marker at $3E1), so the US
@@ -732,13 +785,6 @@ def file_select(
         "IntroLogoTilemap",
     ]
     low_set = frozenset(low_names)
-    # The two low-region routines whose English edit grows them: reserve a
-    # fixed-size slot (a NULL_ gap sized identically in baseline and full)
-    # after each, so the growth never shifts what follows -- in either build.
-    growers = frozenset({"FileSelect_InitializeGFX", "NameFile_EraseSave"})
-    grower_headroom = (
-        16  # >= the largest growth (InitializeGFX +10, erase +11)
-    )
 
     def pull(name: str, *, edited: bool) -> Assembly:
         # An asar pool is emitted inline just before its routine, so a pulled
@@ -763,18 +809,13 @@ def file_select(
     low: list[Line] = []
     pc = low_org
     for name in low_names:
-        start = pc
-        body = pull(name, edited=changes)
+        # edited=True unconditionally: edit_initialize_gfx/edit_erase (the
+        # only low_names entries with edits) branch on `changes` themselves
+        # and pad the baseline to match the full build's size (see above), so
+        # every build is already byte-neutral here -- no growth to absorb.
+        body = pull(name, edited=True)
         low += body.lines
         pc += width(body)
-        if name in growers:
-            # slot = unedited width + headroom, the SAME in both builds; the
-            # filler shrinks by exactly the edit's growth in the full build.
-            slot_end = (
-                start + width(pull(name, edited=False)) + grower_headroom
-            )
-            low += free_block(pc, slot_end - pc)
-            pc = slot_end
     # NB: the IRQ handler + save migrator are appended AFTER the US region
     # (see `tail` below), not here -- keeping the low region (and thus the big
     # bridge NULL_) byte-identical between baseline and full.

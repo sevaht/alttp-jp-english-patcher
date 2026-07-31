@@ -47,8 +47,8 @@ echo "SUCCESS -> $OUT  ($(stat -c%s "$OUT") bytes, md5 $MD5)"
 # Reference builds — a good build matches one of these two:
 #   default    US/Japanese save-slot migration on
 #   no-migrate patcher deployed with --no-save-compatibility
-MD5_DEFAULT="e7fefa0fefb39f354a9005838af6a6dd"
-MD5_NOMIGRATE="8d483f9eb865d11f95b6bbe538e20667"
+MD5_DEFAULT="3fa0ee9b909ac76ef444314cd45c999f"
+MD5_NOMIGRATE="3e4bf0f88a5ad01ae78d49e6b1108628"
 case "$MD5" in
   "$MD5_DEFAULT")   echo "  (verified: reference build — save compatibility)" ;;
   "$MD5_NOMIGRATE") echo "  (verified: reference build — no save migration)" ;;
