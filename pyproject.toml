@@ -64,12 +64,14 @@ include = ["/src", "/tests", "/LICENSE"]
 [tool.black]
 line-length = 79
 skip-magic-trailing-comma = true
-# deploy/ holds the target-side scripts (their own old style); leave them alone.
-force-exclude = "src/alttp_jp_english_patcher/deploy/.*"
+# deploy/ holds the target-side scripts (their own old style); tools/ holds
+# standalone dev/test scripts (own old style too, predates this package).
+# Leave both alone.
+force-exclude = "(src/alttp_jp_english_patcher/deploy|tools)/.*"
 
 [tool.mypy]
 strict = true
-exclude = ["^src/alttp_jp_english_patcher/deploy/", "^dist/"]
+exclude = ["^src/alttp_jp_english_patcher/deploy/", "^tools/", "^dist/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -80,7 +82,7 @@ addopts = "-m 'not slow'"
 
 [tool.ruff]
 line-length = 79
-extend-exclude = ["src/alttp_jp_english_patcher/deploy"]
+extend-exclude = ["src/alttp_jp_english_patcher/deploy", "tools"]
 
 [tool.ruff.lint]
 extend-ignore = ["COM812", "COM819", "E203", "TD003"]

@@ -48,11 +48,9 @@ echo "SUCCESS -> $OUT  ($(stat -c%s "$OUT") bytes, md5 $MD5)"
 # Reference builds — a good build matches one of these two:
 #   default    US/Japanese save-slot migration on
 #   no-migrate patcher deployed with --no-save-compatibility
-MD5_DEFAULT="fa28c040306b075c76c1b5c1ede30553"
-MD5_NOMIGRATE="abb74f0375cab138deedaf9c64f17312"
+MD5_DEFAULT="4262af84c98d1adeba6306ee6b30f31c"
 case "$MD5" in
-  "$MD5_DEFAULT")   echo "  (verified: reference build — save compatibility)" ;;
-  "$MD5_NOMIGRATE") echo "  (verified: reference build — no save migration)" ;;
+  "$MD5_DEFAULT")   echo "  (verified: reference build)" ;;
   *) echo "  (note: matches no reference build — fine if you intended source changes; else re-run binextract.py / check your ROMs)" ;;
 esac
 echo "Play it in any SNES emulator."

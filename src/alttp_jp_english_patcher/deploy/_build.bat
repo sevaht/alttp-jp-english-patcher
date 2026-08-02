@@ -11,9 +11,7 @@ asarmon -wnoW1006 -wnoW1030 --fix-checksum=on main.asm alttp-english.sfc
 
 certutil -hashfile alttp-english.sfc md5
 
-@echo Expected (default build, save compatibility on):
-@echo fa28c040306b075c76c1b5c1ede30553
-@echo Expected (--no-save-compatibility build):
-@echo abb74f0375cab138deedaf9c64f17312
+@echo Expected:
+@echo 4262af84c98d1adeba6306ee6b30f31c
 
 pause

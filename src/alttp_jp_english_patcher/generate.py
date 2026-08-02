@@ -317,11 +317,10 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
             " into $7E2000; the US ROM has no\n"
             "; such routine -- its text font is the plain 2bpp TheFont,"
             " uploaded to VRAM $E000 by\n"
-            "; TransferFontToVRAM. So this override is just a tail-call.\n"
+            "; TransferFontToVRAM. No decompression needed.\n"
             "DecompressFontGFX:\n"
             "EN_DecompressFontGFX:\n"
-            f"#_{mirror(decompress_hook):06X}: JML EN_TransferFontToVRAM"
-            "       ; upload TheFont, then RTL",
+            f"#_{mirror(decompress_hook):06X}: RTL ; US isn't compressed",
             mirror(decompress_hook),
             f"Hook: DecompressFontGFX (mirror of JP ${decompress_hook:06X}).",
             namespace=False,
@@ -594,11 +593,7 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
 
 
 def file_select(
-    sources: Sources,
-    *,
-    changes: bool,
-    save_compat: bool,
-    padbyte_threshold: int,
+    sources: Sources, *, changes: bool, padbyte_threshold: int
 ) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry. Pulled
     whole by recursion from the entry points; a few come from JP for the
@@ -771,8 +766,7 @@ def file_select(
     # save_compat=False). The migrator (save_migration.asm resource) lands in
     # this bank; it is *invoked* at boot from bank_00 (see apply_base_edits) so
     # it runs before InitializeMemoryAndSRAM's $3E1 sanity zeroing.
-    migrate = changes and save_compat
-    if migrate:
+    if changes:
         # Tag freshly-created files as ours -- byte-neutrally, so
         # InitializeSaveFile keeps its size and its US mirror slot. The $55AA
         # marker's own `STA.l $7003E1,X` (4 bytes) is swapped for a `JSL
@@ -914,7 +908,6 @@ def file_select(
     tail: list[Line] = []
     if changes:  # IRQ handler built from a sublabel, not a top-level block
         tail += build_irq_handler().lines
-    if migrate:
         tail += stamp_new_file_stub()  # InitializeSaveFile's byte-neutral tag
         # ensure_anchors gives the hand-written asm the #_<hex> per-line labels
         # the disassembly convention wants; render re-stamps them at emit time.
@@ -1083,23 +1076,22 @@ def _wire_hooks(english: Rom, jp: Rom, relocations: list[Relocation]) -> None:
             )
 
 
-def apply_base_edits(english: Rom, *, migrate: bool = True) -> None:
+def apply_base_edits(english: Rom) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
     # InitializeMemoryAndSRAM, BEFORE it zeroes any main slot's $3E1 word whose
     # value isn't the $55AA marker. A US save's marker lives at $3E5, so its
     # $3E1 would be cleared (breaking the checksum) before the file-select
     # runs. The relocated stub migrates, replays the displaced LDA, JMLs back.
-    if migrate:
-        english.relocate_block(
-            0x0087EF,
-            "EN_MigrateAtBoot",
-            resume=0x0087F3,
-            comment=(
-                "; [ENG-FS] migrate foreign save slots before the $3E1 sanity "
-                "check (us_menu.asm).",
-            ),
-        )
+    english.relocate_block(
+        0x0087EF,
+        "EN_MigrateAtBoot",
+        resume=0x0087F3,
+        comment=(
+            "; [ENG-FS] migrate foreign save slots before the $3E1 sanity "
+            "check (us_menu.asm).",
+        ),
+    )
     # V-IRQ active block -> the relocated name-entry raster-split handler.
     english.relocate_block(
         0x008205,
@@ -1216,7 +1208,6 @@ def build(
     usdasm: Path,
     jpdasm: Path,
     changes: bool,
-    save_compat: bool = True,
     padbyte_threshold: int = DEFAULT_PADBYTE_THRESHOLD,
 ) -> Rom:
     """Assemble the whole English program as one editable :class:`Rom`.
@@ -1232,8 +1223,6 @@ def build(
     ``padbyte_threshold``: this only covers a subsystem's own internal gaps,
     e.g. ``file_select``'s low-region/US-mirror bridge -- write() independently
     fills every *bank-level* gap). Player names are a 6-character field.
-    ``save_compat`` adds the boot-time migrator that converts US / vanilla-
-    Japanese save slots to our format (the default).
     """
     sources = Sources(
         us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
@@ -1245,10 +1234,7 @@ def build(
         credits_bank(sources, changes=changes),
         item_menu(sources, changes=changes),
         file_select(
-            sources,
-            changes=changes,
-            save_compat=save_compat,
-            padbyte_threshold=padbyte_threshold,
+            sources, changes=changes, padbyte_threshold=padbyte_threshold
         ),
         graphics(changes=changes),
         file_select_palette(changes=changes),
@@ -1260,9 +1246,7 @@ def build(
     for relocation in relocations:
         english.add(relocation)
     if changes:
-        # the few edits that are not plain hooks; the boot-time save migrator
-        # is gated like file_select's (save_compat).
-        apply_base_edits(english, migrate=save_compat)
+        apply_base_edits(english)
     patch_main_asm(english)
     return english
 
@@ -1300,7 +1284,6 @@ def main() -> None:
         usdasm=args.usdasm,
         jpdasm=args.jpdasm,
         changes=not args.baseline,
-        save_compat=not args.no_save_compatibility,
         padbyte_threshold=args.padbyte_threshold,
     )
     generated = english.write(

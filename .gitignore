@@ -16,3 +16,15 @@ alttp-us.sfc
 # Local convenience scripts (personal target paths, not part of the package).
 patch-baseline.sh
 patch-full.sh
+
+# tools/: built binaries, downloaded emulator/core, capture artifacts (see
+# tools/README.md). link_intro.srm is a deliberate test fixture, not a build
+# artifact -- un-ignore it from the blanket *.srm rule above.
+tools/runner
+tools/libretro.h
+tools/snes9x_libretro.so
+tools/mesen/
+tools/*.ppm
+tools/*.png
+tools/*.bin
+!tools/link_intro.srm

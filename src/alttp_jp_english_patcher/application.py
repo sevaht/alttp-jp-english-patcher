@@ -198,11 +198,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="emit the change-free baseline (no graft edits or base hooks)",
     )
     parser.add_argument(
-        "--no-save-compatibility",
-        action="store_true",
-        help="omit the boot-time US/Japanese save-slot migrator",
-    )
-    parser.add_argument(
         "--verify",
         action="store_true",
         help="after deploying, check the base edits against the frozen hashes",
@@ -247,7 +242,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         usdasm=usdasm,
         jpdasm=jpdasm,
         changes=not args.baseline,
-        save_compat=not args.no_save_compatibility,
         padbyte_threshold=args.padbyte_threshold,
     )
     english.write(
