@@ -1,18 +1,14 @@
-; File-select palette overlay: JP<->US differ in four CGRAM rows (5, 7, 9,
-; 11). This runs the stock US load, then overlays those four rows from
-; USFS_Palette (a US-ROM PaletteData slice, incbin'd alongside this in
-; file_select_palette()). file_select() repoints the one JSL at it.
+; File-select palette overlay: JP and US differ in four CGRAM rows (5, 7, 9,
+; 11). Runs the stock US load, then overlays those four rows from
+; USFS_Palette (a US-ROM palette slice placed right after this routine). The
+; file-select's one JSL repoints here directly, so this label stays
+; unprefixed (no EN_).
 ;
-; NOTE on row 5: statically it looks unneeded -- the file-select drives
-; PaletteLoad_UnderworldSet with $0AB6 = #$06 (dungeon set $06, which is
-; byte-identical US<->JP), and the overlaid slice ($1BD9AA) is in set $03.
-; But dropping it was tested and turned the wooden file-select borders the
-; wrong colour, so the runtime CGRAM ends up needing it after all -- the load
-; path is more involved than the static read suggests. Keep all four rows.
-;
-; Read verbatim from this file (an embedded package resource) into an
-; Assembly; kept namespace=False (bare, not EN_-prefixed) by generate.py since
-; file_select()'s repoint references this exact name.
+; Row 5 looks unneeded at a glance: the file-select loads dungeon set $06
+; (byte-identical between US and JP) while this row's overlay data is set
+; $03. But removing it was tested and it turned the wooden file-select
+; borders the wrong color, so the runtime load is more involved than that
+; static read suggests -- keep all four rows.
 USFS_PaletteLoadForFileSelect:
     JSL PaletteLoadForFileSelect    ; stock US load (JP palette for FS rows)
     PHP                             ; preserve caller's processor mode (M/X)

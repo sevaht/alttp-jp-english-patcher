@@ -7,9 +7,6 @@
 ; only a slot with a $55AA marker but no $410 tag ($3E1 = JP-family / $3E5 =
 ; US) pays the checksum + convert, once, then it is tagged and skipped. New
 ; files are tagged in InitializeSaveFile.
-;
-; Read verbatim from this file (an embedded package resource) into an Assembly;
-; the label namespacing / placement into bank $2C happens in generate.py.
 
 ; Boot hook: bank_00 InitializeMemoryAndSRAM zeroes each main slot's $3E1 word
 ; when it isn't the $55AA marker -- which a US save (marker at $3E5) always
