@@ -25,7 +25,13 @@ from .assembly import (
     note,
     notes,
 )
-from .hooking import LandingPad, free_block, free_block_padded, free_space
+from .hooking import (
+    DEFAULT_ROW_WIDTH,
+    LandingPad,
+    free_block,
+    free_block_padded,
+    free_space,
+)
 from .patcher import Patcher
 from .rom import Caller, Rom
 from .segment import Segment, code, code_lines
@@ -46,6 +52,7 @@ except importlib.metadata.PackageNotFoundError:
     __version__ = "0.0.0+local"
 
 __all__ = [
+    "DEFAULT_ROW_WIDTH",
     "Address",
     "AnchorSizer",
     "Assembly",

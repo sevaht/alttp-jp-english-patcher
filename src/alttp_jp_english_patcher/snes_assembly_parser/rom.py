@@ -442,7 +442,7 @@ class Rom:
         return regions
 
     def _bank_text(
-        self, bank: int, pieces: list[Placed], *, padbyte_threshold: int
+        self, bank: int, pieces: list[Placed], *, null_padbyte_threshold: int
     ) -> str:
         """One bank's full text: a single leading ``org``, then every piece
         in address order with every gap (leading, between pieces, trailing)
@@ -462,7 +462,7 @@ class Rom:
             if piece.org > pc:
                 segments.append(
                     self._free_space_text(
-                        pc, piece.org - pc, padbyte_threshold
+                        pc, piece.org - pc, null_padbyte_threshold
                     )
                 )
             segments.append(piece.render())
@@ -472,15 +472,17 @@ class Rom:
             raise ValueError(msg)
         if pc < end:
             segments.append(
-                self._free_space_text(pc, end - pc, padbyte_threshold)
+                self._free_space_text(pc, end - pc, null_padbyte_threshold)
             )
         return f"org ${base:06X}\n" + "\n\n".join(segments)
 
     @staticmethod
     def _free_space_text(
-        address: int, size: int, padbyte_threshold: int
+        address: int, size: int, null_padbyte_threshold: int
     ) -> str:
-        lines = free_space(address, size, padbyte_threshold=padbyte_threshold)
+        lines = free_space(
+            address, size, null_padbyte_threshold=null_padbyte_threshold
+        )
         return "\n".join(str(line) for line in lines)
 
     # ---- output ----
@@ -489,7 +491,7 @@ class Rom:
         out_dir: Path,
         *,
         bank_header: Callable[[int], str] | None = None,
-        padbyte_threshold: int = 128,
+        null_padbyte_threshold: int = 128,
     ) -> list[str]:
         """Write the program into ``out_dir``; return the generated banks.
 
@@ -503,13 +505,14 @@ class Rom:
         trailing) explicitly filled as a labelled ``NULL_``/``FREE ROM`` span
         (matching the base disassembly's own convention of accounting for
         every byte, never an ``org`` mid-file to skip over one). A gap over
-        ``padbyte_threshold`` bytes is filled with a single ``padbyte``/``pad``
-        jump instead of a wall of explicit rows; ``<= 0`` disables that (always
-        explicit rows). Wiring the generated files into ``main.asm`` (the
-        ``incsrc`` lines and any ROM padding) is the driver's job, as that
-        block is program-specific. ``bank_header(bank)`` names the header for a
-        generated bank (a plain one by default). Returns the generated
-        ``bank_XX.asm`` names, in bank order.
+        ``null_padbyte_threshold`` bytes is filled with a single
+        ``padbyte``/``pad`` jump instead of a wall of explicit rows; ``<= 0``
+        disables that (always explicit rows). Wiring the generated files into
+        ``main.asm`` (the ``incsrc`` lines and any ROM padding) is the
+        driver's job, as that block is program-specific.
+        ``bank_header(bank)`` names the header for a generated bank (a plain
+        one by default). Returns the generated ``bank_XX.asm`` names, in
+        bank order.
         """
         out_dir = Path(out_dir)
         root = (self.entry.parent if self.entry else out_dir).resolve()
@@ -522,7 +525,7 @@ class Rom:
             name = f"bank_{bank:02X}.asm"
             pieces = sorted(by_bank[bank], key=lambda piece: piece.org)
             body = self._bank_text(
-                bank, pieces, padbyte_threshold=padbyte_threshold
+                bank, pieces, null_padbyte_threshold=null_padbyte_threshold
             )
             header = (
                 bank_header(bank)

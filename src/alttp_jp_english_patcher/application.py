@@ -33,7 +33,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import user_cache_path, verify_base
-from .generate import DEFAULT_PADBYTE_THRESHOLD, build
+from .generate import (
+    DEFAULT_NOP_PADBYTE_THRESHOLD,
+    DEFAULT_NULL_PADBYTE_THRESHOLD,
+    build,
+)
 from .gitignore import patch as patch_gitignore
 from .graft import bank_header
 from .us_assets import render_binextract_us
@@ -209,12 +213,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--jpdasm", type=Path, help="JP disassembly checkout (default: cached)"
     )
     parser.add_argument(
-        "--padbyte-threshold",
+        "--null-padbyte-threshold",
         type=int,
-        default=DEFAULT_PADBYTE_THRESHOLD,
+        default=DEFAULT_NULL_PADBYTE_THRESHOLD,
         help="free-ROM gaps over this many bytes use a padbyte/pad jump "
         "instead of explicit db $FF rows; 0 disables padbyte entirely, "
-        f"always explicit rows (default: {DEFAULT_PADBYTE_THRESHOLD})",
+        f"always explicit rows (default: {DEFAULT_NULL_PADBYTE_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--nop-padbyte-threshold",
+        type=int,
+        default=DEFAULT_NOP_PADBYTE_THRESHOLD,
+        help="a baseline edit-site filler's interior dead bytes (past its "
+        "JMP) over this many bytes use a padbyte/pad fill instead of one "
+        "NOP per byte; 0 disables padbyte entirely, always explicit NOPs "
+        f"(default: {DEFAULT_NOP_PADBYTE_THRESHOLD}). Separate from "
+        "--null-padbyte-threshold, which only covers bank-level free-ROM "
+        "regions",
     )
     return parser
 
@@ -242,12 +257,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         usdasm=usdasm,
         jpdasm=jpdasm,
         changes=not args.baseline,
-        padbyte_threshold=args.padbyte_threshold,
+        null_padbyte_threshold=args.null_padbyte_threshold,
+        nop_padbyte_threshold=args.nop_padbyte_threshold,
     )
     english.write(
         target,
         bank_header=bank_header,
-        padbyte_threshold=args.padbyte_threshold,
+        null_padbyte_threshold=args.null_padbyte_threshold,
     )
 
     print("==> deploying build tooling")

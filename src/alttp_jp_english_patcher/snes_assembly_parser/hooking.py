@@ -72,7 +72,18 @@ def landing_pad_lines(
     return lines, program_counter
 
 
-def byte_rows(address: int, values: list[int], per_row: int = 8) -> list[Line]:
+#: The base disassembly's own row width for a filler span written out as
+#: explicit rows (confirmed empirically: its own NULL_ free-space regions are
+#: near-universally 8 ``db`` values per line). The single source of truth for
+#: "how many values per row" -- :func:`byte_rows`'s own default below, and
+#: anything else in this codebase wrapping a hand-built filler row the same
+#: way, reads this rather than repeating the literal ``8``.
+DEFAULT_ROW_WIDTH = 8
+
+
+def byte_rows(
+    address: int, values: list[int], per_row: int = DEFAULT_ROW_WIDTH
+) -> list[Line]:
     """``db`` rows for ``values`` (``per_row`` per line), anchored from
     ``address``."""
     rows: list[Line] = []
@@ -139,17 +150,18 @@ def free_block_padded(address: int, size: int) -> list[Line]:
 
 
 def free_space(
-    address: int, size: int, *, padbyte_threshold: int
+    address: int, size: int, *, null_padbyte_threshold: int
 ) -> list[Line]:
     """A ``NULL_`` free-ROM span: :func:`free_block` normally, or
-    :func:`free_block_padded` once ``size`` exceeds ``padbyte_threshold``.
+    :func:`free_block_padded` once ``size`` exceeds
+    ``null_padbyte_threshold``.
 
-    ``padbyte_threshold <= 0`` disables padbyte entirely (always explicit
-    rows, matching the base disassembly's own convention of writing every
-    byte); ``size <= 0`` emits nothing (no gap to fill).
+    ``null_padbyte_threshold <= 0`` disables padbyte entirely (always
+    explicit rows, matching the base disassembly's own convention of writing
+    every byte); ``size <= 0`` emits nothing (no gap to fill).
     """
     if size <= 0:
         return []
-    if padbyte_threshold > 0 and size > padbyte_threshold:
+    if null_padbyte_threshold > 0 and size > null_padbyte_threshold:
         return free_block_padded(address, size)
     return free_block(address, size)

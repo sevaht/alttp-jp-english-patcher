@@ -30,6 +30,7 @@ from pathlib import Path
 from . import us_assets
 from .graft import Relocation, bank_header, mirror, require_start, substitute
 from .snes_assembly_parser import (
+    DEFAULT_ROW_WIDTH,
     Assembly,
     Block,
     Edit,
@@ -49,10 +50,18 @@ from .snes_assembly_parser import (
 USDASM = Path("../usdasm")
 JPDASM = Path("../jpdasm")
 
-#: Rom.write()'s default padbyte_threshold: a free-ROM gap over this many
+#: Rom.write()'s default null_padbyte_threshold: a free-ROM gap over this many
 #: bytes is filled with a single padbyte/pad jump instead of explicit db $FF
 #: rows. 0 disables padbyte entirely (always explicit rows).
-DEFAULT_PADBYTE_THRESHOLD = 128
+DEFAULT_NULL_PADBYTE_THRESHOLD = 128
+
+#: nop_fill()'s default threshold: a JMP-past-a-gap's *interior* dead bytes
+#: over this many bytes are filled with padbyte/pad instead of one NOP per
+#: byte. Distinct from DEFAULT_NULL_PADBYTE_THRESHOLD (and much smaller) since
+#: these gaps are a single edit site's byte-neutral filler, not a whole
+#: free-ROM region -- most are tiny. 0 disables padbyte entirely (always
+#: explicit NOPs).
+DEFAULT_NOP_PADBYTE_THRESHOLD = 64
 
 
 @dataclass(frozen=True)
@@ -102,11 +111,76 @@ def _save_migration_lines() -> list[str]:
     return _resource_lines("save_migration.asm")
 
 
-def nop_fill(count: int, tag: str, comment: str) -> list[Line]:
-    """Baseline stand-in for a full-only insertion: same byte count (``NOP``
-    is 1 byte, harmless in straight-line code), so an edited routine's size --
-    and every anchor after it -- matches the full build exactly."""
-    return notes([f"; [{tag}] {comment}"]) + instructions(["NOP"] * count)
+def _row_fill(directive: str, value: str, count: int) -> list[Line]:
+    """``count`` copies of ``value`` under ``directive`` (``db``/``dw``),
+    wrapped at :data:`~.snes_assembly_parser.DEFAULT_ROW_WIDTH` per line --
+    the same width :func:`~.snes_assembly_parser.free_space`'s own explicit
+    rows use, so a hand-built filler row (one this codebase constructs
+    itself, rather than one sized/anchored from a parsed disassembly) reads
+    the same way."""
+    values = [value] * count
+    return datas(
+        f"{directive} " + ", ".join(values[i : i + DEFAULT_ROW_WIDTH])
+        for i in range(0, count, DEFAULT_ROW_WIDTH)
+    )
+
+
+def nop_fill(
+    count: int,
+    tag: str,
+    comment: str,
+    *,
+    nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
+) -> list[Line]:
+    """Baseline stand-in for a full-only insertion: same byte count, so an
+    edited routine's size -- and every anchor after it -- matches the full
+    build exactly.
+
+    A wall of one ``NOP`` per byte reads worse the bigger ``count`` gets, so
+    only 1 byte stays a lone ``NOP``; anything bigger jumps past the gap, then
+    fills it: a single ``db`` row of ``$EA`` at or under
+    ``nop_padbyte_threshold``, else ``fillbyte``/``fill`` -- mirroring
+    ``free_space``'s own small-gap-explicit / large-gap-padbyte split, just at
+    a much smaller default cutoff, since these gaps are one edit site's
+    filler, not a whole free-ROM region (``nop_padbyte_threshold <= 0``
+    disables that, same as ``free_space``'s ``null_padbyte_threshold``).
+    Either way the dead bytes read as harmless NOPs on the off chance they are
+    ever reached.
+
+    The "jump past the gap" is ``BRA +0``/``BRL +gap`` -- asar's *literal*
+    relative-displacement syntax (confirmed empirically: ``BRA +0`` assembles
+    straight to ``$80 $00``, ``BRL +5`` to ``$82 $05 $00``) -- rather than the
+    mnemonic with a label marking where the gap ends: this code hasn't been
+    placed yet when ``nop_fill`` runs -- often not even in its final bank
+    (:func:`text`, for one, mirrors its engine into bank ``$2E`` after this
+    runs) -- so there's no real address for a label to carry, and a
+    same-purpose invented label (with nothing else to call it) is a name to
+    collide, a scope to get wrong, and one more thing to read. A branch's
+    displacement is just "how far to the next byte after the gap", which is
+    ``0``/``gap`` -- known upfront in Python -- so ``+gap`` needs neither a
+    label nor a real address; asar resolves it as a literal offset, not an
+    address expression. Likewise ``fill`` (unlike ``pad``) takes a byte
+    *count*, not a target address, so the large-gap branch does not need one
+    either (and sidesteps a separate asar bug: ``pad``'s target silently
+    mis-evaluates to a bogus address when given a forward-referenced label).
+    """
+    header = notes([f"; [{tag}] {comment}"])
+    if count <= 1:
+        return header + (instructions(["NOP"]) if count else [])
+    if count == 2:  # noqa: PLR2004 -- BRA +0 (2-byte NOP), nothing to fill
+        return [*header, *instructions(["BRA +0"])]
+    gap = count - 3
+    lines = [*header, *instructions([f"BRL +{gap}"])]
+    if gap == 1:
+        lines += instructions(["NOP"])
+    elif gap > 1:
+        if nop_padbyte_threshold > 0 and gap > nop_padbyte_threshold:
+            fill_line = note(f"fill {gap}")
+            fill_line.size = gap
+            lines += [note("fillbyte $EA"), fill_line]
+        else:
+            lines += _row_fill("db", "$EA", gap)
+    return lines
 
 
 # The VWF font blob's labels, shared by the text engine and the bank_00 upload;
@@ -114,7 +188,12 @@ def nop_fill(count: int, tag: str, comment: str) -> list[Line]:
 THEFONT_LABELS = frozenset({"TheFont", "TheFont_end"})
 
 
-def text(sources: Sources, *, changes: bool) -> Relocation:
+def text(
+    sources: Sources,
+    *,
+    changes: bool,
+    nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
+) -> Relocation:
     """The US text subsystem: the VWF font (bank ``$20``), the message engine
     (mirror-placed to ``$2E``), and the message data (``$22``/``$23``).
 
@@ -192,7 +271,10 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
         engine.insert_after(
             "#_0ED3F9:",
             nop_fill(
-                10, "ENG-TEXT", "reserved: see CreateMessagePointers init"
+                10,
+                "ENG-TEXT",
+                "reserved: see CreateMessagePointers init",
+                nop_padbyte_threshold=nop_padbyte_threshold,
             ),
         )
     if changes:
@@ -227,7 +309,10 @@ def text(sources: Sources, *, changes: bool) -> Relocation:
         engine.insert_before(
             "#_0ED3FC:",
             nop_fill(
-                37, "ENG-TEXT", "reserved: see CreateMessagePointers check"
+                37,
+                "ENG-TEXT",
+                "reserved: see CreateMessagePointers check",
+                nop_padbyte_threshold=nop_padbyte_threshold,
             ),
         )
 
@@ -549,14 +634,9 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
                     "; [ENG-ITEM] reserved: JP's Mirror slot is 4 rows (US",
                     "; has 2); the full build fills these with the copies.",
                 ]
-            ) + datas(
-                [
-                    "dw "
-                    + ", ".join(["$FFFF"] * (row.size // 2))
-                    + " ; reserved"
-                    for row in rows
-                ]
             )
+            for row in rows:
+                fill += _row_fill("dw", "$FFFF", row.size // 2)
         region.lines[end:end] = fill
 
     def restore_ability_jp_rows(region: Assembly) -> None:
@@ -593,7 +673,11 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
 
 
 def file_select(
-    sources: Sources, *, changes: bool, padbyte_threshold: int
+    sources: Sources,
+    *,
+    changes: bool,
+    null_padbyte_threshold: int,
+    nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry. Pulled
     whole by recursion from the entry points; a few come from JP for the
@@ -684,7 +768,10 @@ def file_select(
             block.insert_after(
                 "STZ.w $0AB6",
                 nop_fill(
-                    5, "ENG-FS", "reserved: see FileSelect_InitializeGFX>0AB6"
+                    5,
+                    "ENG-FS",
+                    "reserved: see FileSelect_InitializeGFX>0AB6",
+                    nop_padbyte_threshold=nop_padbyte_threshold,
                 ),
             )
         if changes:
@@ -702,7 +789,10 @@ def file_select(
             block.insert_after(
                 "STA.w $0AA1",
                 nop_fill(
-                    5, "ENG-FS", "reserved: see FileSelect_InitializeGFX>0AA1"
+                    5,
+                    "ENG-FS",
+                    "reserved: see FileSelect_InitializeGFX>0AA1",
+                    nop_padbyte_threshold=nop_padbyte_threshold,
                 ),
             )
 
@@ -727,7 +817,10 @@ def file_select(
             block.insert_before(
                 "STA.l $7003D9,X",
                 nop_fill(
-                    8, "ENG-FS", "reserved: see NameFile_EraseSave>7003D9"
+                    8,
+                    "ENG-FS",
+                    "reserved: see NameFile_EraseSave>7003D9",
+                    nop_padbyte_threshold=nop_padbyte_threshold,
                 ),
             )
 
@@ -895,7 +988,7 @@ def file_select(
             raise ValueError(msg)
         if target > pc:
             us_region += free_space(
-                pc, target - pc, padbyte_threshold=padbyte_threshold
+                pc, target - pc, null_padbyte_threshold=null_padbyte_threshold
             )
             pc = target
         us_region += seg.lines
@@ -921,7 +1014,9 @@ def file_select(
         msg = "file_select: low region overruns the US mirror start"
         raise ValueError(msg)
     bridge = free_space(
-        low_end, first_mirror - low_end, padbyte_threshold=padbyte_threshold
+        low_end,
+        first_mirror - low_end,
+        null_padbyte_threshold=null_padbyte_threshold,
     )
     bank = low + bridge + us_region + tail
 
@@ -1208,7 +1303,8 @@ def build(
     usdasm: Path,
     jpdasm: Path,
     changes: bool,
-    padbyte_threshold: int = DEFAULT_PADBYTE_THRESHOLD,
+    null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
+    nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Rom:
     """Assemble the whole English program as one editable :class:`Rom`.
 
@@ -1220,21 +1316,32 @@ def build(
     ``changes`` is off, the change-free baseline), and ``main.asm`` is wired.
     Writing it back out -- base banks hooked in place, graft banks beside them
     -- is the caller's :meth:`Rom.write` (pass it the *same*
-    ``padbyte_threshold``: this only covers a subsystem's own internal gaps,
-    e.g. ``file_select``'s low-region/US-mirror bridge -- write() independently
-    fills every *bank-level* gap). Player names are a 6-character field.
+    ``null_padbyte_threshold``: this only covers a subsystem's own internal
+    gaps, e.g. ``file_select``'s low-region/US-mirror bridge -- write()
+    independently fills every *bank-level* gap). ``nop_padbyte_threshold`` is
+    separate: it only governs the baseline's byte-neutral filler at a
+    ``changes``-guarded edit site (see :func:`nop_fill`), never a bank-level
+    free-ROM region. Player
+    names are a 6-character field.
     """
     sources = Sources(
         us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
     )
     english = sources.jp.copy()
     relocations = [
-        text(sources, changes=changes),
+        text(
+            sources,
+            changes=changes,
+            nop_padbyte_threshold=nop_padbyte_threshold,
+        ),
         font_upload(sources, changes=changes),
         credits_bank(sources, changes=changes),
         item_menu(sources, changes=changes),
         file_select(
-            sources, changes=changes, padbyte_threshold=padbyte_threshold
+            sources,
+            changes=changes,
+            null_padbyte_threshold=null_padbyte_threshold,
+            nop_padbyte_threshold=nop_padbyte_threshold,
         ),
         graphics(changes=changes),
         file_select_palette(changes=changes),
@@ -1272,24 +1379,36 @@ def main() -> None:
         help="jpdasm fork to write the whole English program into",
     )
     parser.add_argument(
-        "--padbyte-threshold",
+        "--null-padbyte-threshold",
         type=int,
-        default=DEFAULT_PADBYTE_THRESHOLD,
+        default=DEFAULT_NULL_PADBYTE_THRESHOLD,
         help="free-ROM gaps over this many bytes use a padbyte/pad jump "
         f"instead of explicit db $FF rows; 0 disables padbyte entirely, "
-        f"always explicit rows (default: {DEFAULT_PADBYTE_THRESHOLD})",
+        f"always explicit rows (default: {DEFAULT_NULL_PADBYTE_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--nop-padbyte-threshold",
+        type=int,
+        default=DEFAULT_NOP_PADBYTE_THRESHOLD,
+        help="a baseline edit-site filler's interior dead bytes (past its "
+        "JMP) over this many bytes use a padbyte/pad fill instead of one "
+        "NOP per byte; 0 disables padbyte entirely, always explicit NOPs "
+        f"(default: {DEFAULT_NOP_PADBYTE_THRESHOLD}). Separate from "
+        "--null-padbyte-threshold, which only covers bank-level free-ROM "
+        "regions",
     )
     args = parser.parse_args()
     english = build(
         usdasm=args.usdasm,
         jpdasm=args.jpdasm,
         changes=not args.baseline,
-        padbyte_threshold=args.padbyte_threshold,
+        null_padbyte_threshold=args.null_padbyte_threshold,
+        nop_padbyte_threshold=args.nop_padbyte_threshold,
     )
     generated = english.write(
         args.out,
         bank_header=bank_header,
-        padbyte_threshold=args.padbyte_threshold,
+        null_padbyte_threshold=args.null_padbyte_threshold,
     )
     mode = "baseline" if args.baseline else "with changes"
     print(
