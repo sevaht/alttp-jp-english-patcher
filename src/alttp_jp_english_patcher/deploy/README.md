@@ -21,8 +21,11 @@ fonts can actually show:
 * **Japanese saves** — the name is kept only if it is made up **entirely of
   uppercase Latin letters** (`A`–`Z`, the sole characters both the Japanese and
   English fonts share); those are remapped to this build's encoding. Any name
-  containing kana or other glyphs the English font can't render is replaced with
-  **`Link`**.
+  containing kana or other glyphs the English font can't render is left
+  blank instead. Selecting a save with a blank name drops you into the
+  normal naming screen to pick one — the rest of the save (items, deaths,
+  progress) is untouched, and confirming a name returns you to file select
+  just like naming a brand-new file does.
 
 ---
 

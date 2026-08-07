@@ -99,10 +99,14 @@ RTS
 
 ; Japanese name: keep it only if every glyph is an uppercase-Latin letter or
 ; space (the sole characters shared by both fonts), remapped from the JP name
-; codes (A-Z = $AA-$C3, space $CC) to ours; else fall back to "Link  ". Reads
-; the 4-word JP field at $3D9 and writes our 6-word field at $3D5; writes land
-; 4 bytes below the reads and go forward, so each source word is consumed
-; before it's overwritten.
+; codes (A-Z = $AA-$C3, space $CC) to ours; else leave the name entirely
+; blank ($00A9 in all six words) -- a state normal name entry can never
+; produce (it won't let you confirm an all-blank name), so file-select
+; recognizes it as "valid save, needs a name" and routes the player into
+; name entry to pick one, rather than silently handing everyone imported
+; from JP the same default name. Reads the 4-word JP field at $3D9 and
+; writes our 6-word field at $3D5; writes land 4 bytes below the reads and
+; go forward, so each source word is consumed before it's overwritten.
 ConvertJP:
 STZ.b $04                       ; $04 = non-Latin flag (0 = keep the name)
 LDX.b $00
@@ -122,21 +126,15 @@ LDA.w #$00A9                    ; trailing spaces (words 5-6)
 STA.l $7003DD,X
 STA.l $7003DF,X
 LDA.b $04
-BNE .link                       ; a non-Latin glyph -> default name instead
+BNE .blank                      ; a non-Latin glyph -> leave the name blank
 RTS
-.link                           ; vanilla kana (or any non-Latin) -> "Link  "
+.blank                          ; vanilla kana (or any non-Latin) -> all blank
 LDX.b $00
-LDA.w #$000B                    ; L
+LDA.w #$00A9
 STA.l $7003D5,X
-LDA.w #$00C0                    ; i
 STA.l $7003D7,X
-LDA.w #$0047                    ; n
 STA.l $7003D9,X
-LDA.w #$0044                    ; k
 STA.l $7003DB,X
-LDA.w #$00A9                    ; space
-STA.l $7003DD,X
-STA.l $7003DF,X                ; space
 RTS
 
 ; One JP name word -> our name word. Decodes the nibble-spread store

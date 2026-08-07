@@ -111,6 +111,13 @@ def _save_migration_lines() -> list[str]:
     return _resource_lines("save_migration.asm")
 
 
+# Module04_NameFile submodule 4: names an already-valid, blank-named save
+# (an unconvertible JP import) without erasing it -- see edit_check_blank_name
+# and StampNewFileTag.
+def _name_fix_lines() -> list[str]:
+    return _resource_lines("name_fix.asm")
+
+
 def _row_fill(directive: str, value: str, count: int) -> list[Line]:
     """``count`` copies of ``value`` under ``directive`` (``db``/``dw``),
     wrapped at :data:`~.snes_assembly_parser.DEFAULT_ROW_WIDTH` per line --
@@ -148,8 +155,8 @@ def nop_fill(
     ever reached.
 
     The "jump past the gap" is ``BRA +0``/``BRL +gap`` -- asar's *literal*
-    relative-displacement syntax (confirmed empirically: ``BRA +0`` assembles
-    straight to ``$80 $00``, ``BRL +5`` to ``$82 $05 $00``) -- rather than the
+    relative-displacement syntax (``BRA +0`` assembles straight to
+    ``$80 $00``, ``BRL +5`` to ``$82 $05 $00``) -- rather than the
     mnemonic with a label marking where the gap ends: this code hasn't been
     placed yet when ``nop_fill`` runs -- often not even in its final bank
     (:func:`text`, for one, mirrors its engine into bank ``$2E`` after this
@@ -824,6 +831,78 @@ def file_select(
                 ),
             )
 
+    def edit_widen_idle_exit(block: Assembly) -> None:
+        # FileSelect_HandleInput's very first "no relevant input this frame"
+        # check has to reach all the way to the routine's own .exit -- it was
+        # already close to BEQ's +-127 limit in the unmodified US source, and
+        # this routine's own growth here (edit_check_blank_name's real JSR or
+        # its same-size baseline filler -- either way, both builds grow it
+        # identically) tips it 1 byte over. Widen to an unconditional long
+        # jump; applied unconditionally (not gated on `changes`) since both
+        # builds need it equally.
+        block.splice(
+            "BEQ .exit",
+            [*instructions(["BNE .not_idle", "JMP .exit"]), ".not_idle"],
+        )
+
+    def edit_check_blank_name(block: Assembly) -> None:
+        # US FileSelect_HandleInput: a valid save ($BF,X != 0, about to fall
+        # into the normal load-and-play path) whose name is all-blank (see
+        # ConvertJP's blank fallback for an unconvertible JP import) needs a
+        # name before it can be played. The actual check/redirect lives
+        # out-of-line (FileSelect_NameIsBlankRedirect, name_fix.asm) so this
+        # inline footprint is just a 3-byte JSR -- this routine's own
+        # pre-existing short branches (BEQ/BRA to its ".exit") sit mid-routine,
+        # before this insertion point, with little headroom to spare. Packed
+        # low (see low_names) since it grows past its original
+        # US slot -- byte-neutral between builds like FileSelect_InitializeGFX/
+        # NameFile_EraseSave's edits, so a same-size filler stands in for the
+        # baseline.
+        if changes:
+            block.insert_after(
+                "BEQ .no_file_there",
+                instructions(["JSR FileSelect_NameIsBlankRedirect"]),
+            )
+        else:
+            block.insert_after(
+                "BEQ .no_file_there",
+                nop_fill(
+                    3,
+                    "ENG-FS",
+                    "reserved: see FileSelect_HandleInput>blank-name check",
+                    nop_padbyte_threshold=nop_padbyte_threshold,
+                ),
+            )
+
+    def edit_add_rename_submodule(block: Assembly) -> None:
+        # Append submodule 4 (NameFile_SetupRename, see name_fix.asm /
+        # edit_check_blank_name) to the dispatch table. Module04_NameFile is
+        # packed low (see low_names), so -- like edit_initialize_gfx/
+        # edit_erase -- it needs the same size in both builds; a `dl` entry
+        # is data, never executed as code, so the baseline stand-in is a
+        # plain 3-byte placeholder rather than nop_fill (which is for
+        # instruction-flow filler).
+        if changes:
+            block.insert_after(
+                "dl NameFile_DoTheNaming", datas(["dl NameFile_SetupRename"])
+            )
+        else:
+            block.insert_after(
+                "dl NameFile_DoTheNaming",
+                notes(["; [ENG-FS] reserved: unused submodule 4 slot"])
+                + datas(["dl $000000"]),
+            )
+
+    def edit_handle_input_marker(block: Assembly) -> None:
+        # US FileSelect_HandleInput reads the $3E5 marker natively; JP's is
+        # $3E1. Same length either way, but gated (not a plain tuple) now
+        # that this routine is packed low (see low_names) and so always
+        # edited -- baseline should still read the untouched US marker,
+        # matching edit_initialize_gfx/edit_erase's own already-byte-neutral
+        # replaces, which are gated the same way.
+        if changes:
+            block.replace("LDA.l $7003E5,X", "LDA.l $7003E1,X", count=1)
+
     # Player name: widen the SRAM name to a contiguous 6-word field at $3D5
     # (ending just before the JP checksum marker at $3E1), so the US
     # 6-char-native routines just need their base repointed -4 ($7003D9 ->
@@ -841,7 +920,11 @@ def file_select(
         "InitializeSaveFile": [("LDA.l $7003D9", "LDA.l $7003D5", 1)],
     }
     edits: dict[str, list[Edit]] = {
-        "FileSelect_HandleInput": [("LDA.l $7003E5,X", "LDA.l $7003E1,X", 1)],
+        "FileSelect_HandleInput": [
+            edit_handle_input_marker,
+            edit_check_blank_name,
+            edit_widen_idle_exit,
+        ],
         "FileSelect_DrawDeaths": [("LDA.l $700405,X", "LDA.l $700401,X", 1)],
         "ReinitializeFileSelectGraphics": [
             (
@@ -852,8 +935,18 @@ def file_select(
         ],
         "FileSelect_InitializeGFX": [edit_initialize_gfx],
         "NameFile_EraseSave": [edit_erase],
+        "Module04_NameFile": [edit_add_rename_submodule],
         **name_edits,
     }
+
+    def edit_mark_checksum_only(block: Assembly) -> None:
+        # A zero-byte, scope-transparent label marking InitializeSaveFile's
+        # checksum-recompute tail (right before the `LDX.b $00` that reloads
+        # the slot offset), so StampNewFileTag's rename-only branch below can
+        # jump straight there. Anchored on the copy-loop's own exit branch
+        # since `LDX.b $00` alone isn't unique in this routine (it also
+        # appears right after the checksum loop).
+        block.insert_after("BPL .copy_next", ["#checksum_only:"])
 
     # Save compatibility: migrate foreign slots to our format (skippable with
     # save_compat=False). The migrator (save_migration.asm resource) lands in
@@ -864,27 +957,49 @@ def file_select(
         # InitializeSaveFile keeps its size and its US mirror slot. The $55AA
         # marker's own `STA.l $7003E1,X` (4 bytes) is swapped for a `JSL
         # StampNewFileTag` (also 4 bytes); the stub (built in the tail below)
-        # writes the marker AND our $410 tag, then RTLs.
+        # writes the marker AND our $410 tag, then RTLs -- or, for a
+        # blank-name rename (see edit_check_blank_name), skips straight to
+        # the checksum recompute instead (edit_mark_checksum_only's label).
         edits["InitializeSaveFile"].append(
             ("STA.l $7003E1,X", "JSL StampNewFileTag", 1)
         )
+        edits["InitializeSaveFile"].append(edit_mark_checksum_only)
 
     def stamp_new_file_stub() -> list[Line]:
-        return notes(
-            [
-                ";" + "=" * 99,
-                "; [ENG-FS] New-file format tag, out-of-line so",
-                "; InitializeSaveFile stays byte-neutral (a JSL replaces its",
-                "; $55AA-marker STA -- same 4 bytes). A holds $55AA on entry.",
-                "StampNewFileTag:",
-            ]
-        ) + instructions(
-            [
-                "STA.l $7003E1,X    ; the $55AA marker (A still = $55AA)",
-                "LDA.w #$0006",
-                "STA.l $700410,X    ; our-format tag",
-                "RTL",
-            ]
+        return (
+            notes(
+                [
+                    ";" + "=" * 99,
+                    "; [ENG-FS] New-file format tag, out-of-line so",
+                    "; InitializeSaveFile stays byte-neutral (a JSL replaces",
+                    "; its $55AA-marker STA -- same 4 bytes). A holds $55AA",
+                    "; on entry. If the marker's already set, this save was",
+                    "; never erased -- a blank-name rename, not a new file",
+                    "; -- so skip the marker/bomb-wall/deaths/starting-items",
+                    "; reset and jump straight to the checksum recompute.",
+                    "StampNewFileTag:",
+                ]
+            )
+            + instructions(
+                [
+                    "CMP.l $7003E1,X    ; already $55AA? (A is still $55AA)",
+                    "BEQ .rename_only",
+                    "STA.l $7003E1,X    ; the $55AA marker",
+                    "LDA.w #$0006",
+                    "STA.l $700410,X    ; our-format tag",
+                    "RTL",
+                ]
+            )
+            + notes([".rename_only"])
+            + instructions(
+                [
+                    "TSC                 ; discard the JSL return address",
+                    "CLC                 ; (3 bytes) so RTL doesn't land back",
+                    "ADC.w #$0003        ; after this JSL -- we're jumping",
+                    "TCS                 ; past it, to the checksum tail",
+                    "JML checksum_only",
+                ]
+            )
         )
 
     # ---- placement: mirror the US routines, pack the JP restorations low ----
@@ -918,11 +1033,22 @@ def file_select(
     # InitializeSaveFile is NOT here: a short BNE in NameFile_DoTheNaming pins
     # it to the US layout, so it stays mirror-placed (it fits the US slot
     # exactly, and its tag edit is byte-neutral -- see StampNewFileTag).
+    # FileSelect_HandleInput and Module04_NameFile are ALSO here now: neither
+    # is branch-distance-pinned (FileSelect_HandleInput is only JSL'd;
+    # Module04_NameFile is only reached via bank_00's RunModule data table),
+    # and mirror-placing left zero slack before the next mirrored routine in
+    # each case (CopySaveToWRAM sits byte-adjacent to FileSelect_HandleInput
+    # in the source US ROM), so growing either one here (edit_check_blank_name/
+    # edit_add_rename_submodule) would overlap the next mirrored routine.
+    # Packing them low needs the same byte-neutral treatment as the other
+    # low_names members.
     low_names = [
         "FileSelect_InitializeGFX",
         "CopyFile_FindFileIndices",
         "KILLFile_FindFileIndices",
         "NameFile_EraseSave",
+        "FileSelect_HandleInput",
+        "Module04_NameFile",
         "IntroLogoTilemap",
     ]
     low_set = frozenset(low_names)
@@ -1009,6 +1135,7 @@ def file_select(
             .ensure_anchors()
             .lines
         )
+        tail += Assembly.from_content(_name_fix_lines()).ensure_anchors().lines
 
     if first_mirror < low_end:
         msg = "file_select: low region overruns the US mirror start"
