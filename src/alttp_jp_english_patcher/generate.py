@@ -1348,6 +1348,69 @@ def apply_base_edits(english: Rom) -> None:
     )
 
 
+def apply_intro_fix(english: Rom) -> None:
+    """Fix JP 1.0's intro-cutscene guard-sprite bug in ``PuppetSoldier``
+    (bank $1D) -- see TCRF's ALTTP page, "Introduction". ``PuppetSoldier``
+    picks sprite $41 (sword) or $43 (spear) with ``LDA $05 / ORA #$30 / STA
+    $0F50,X`` (the palette) followed by ``CMP #$39``; JP 1.0 sandwiches an
+    unrelated ``LDA #$10 / STA $0E60,X`` between those two, clobbering A, so
+    the CMP always fails and every guard draws as the spear sprite. The US
+    ROM already has both stray writes moved earlier in the routine, keeping A
+    intact for the check; this reorders JP 1.0 to match -- the same
+    instructions, just resequenced, so the routine's size (and everything
+    after it) is unaffected.
+    """
+    unit = english.units[english.unit_of("PuppetSoldier")]
+    start = unit.labels["PuppetSoldier"]
+    end = unit.labels["Overlord19_ArmosCoordinator"]
+    original_size = sum(line.size for line in unit.lines[start:end])
+
+    # A plain constructor, not from_lines(): that would re-run AnchorSizer
+    # over just this slice, and the final RTL -- the slice's last anchor,
+    # with no later anchor in range to measure against -- would collapse to
+    # size 0. The lines already carry correct sizes from the full-file parse.
+    block = Assembly(list(unit.lines[start:end]))
+    block.delete("LDA.b #$10", until="STZ.w $0F70,X")
+    block.delete("STZ.w $0F70,X", until="LDY.b #$41")
+    block.delete("!USELESS", until="CMP.b #$39")
+    block.insert_before(
+        "JSL Get16BitSpriteCoords_long",
+        [*instructions(["STZ.w $0F70,X"]), note("")],
+    )
+    block.insert_before(
+        "STZ.w $0B89,X",
+        [*instructions(["LDA.b #$10", "STA.w $0E60,X"]), note("")],
+    )
+    block.insert_before(
+        "CMP.b #$39",
+        notes(
+            [
+                "; [ENG-INTRO] JP 1.0 bug fix (see TCRF): LDA #$10/STA",
+                "; $0E60,X used to sit between the palette store above and",
+                "; this CMP, clobbering A so the check always failed and",
+                "; this guard always drew with the spear sprite ($43).",
+                "; Reordered (matching the US ROM) so A still holds the",
+                "; palette value here. Skippable with --no-intro-fix.",
+            ]
+        ),
+    )
+
+    fixed_size = sum(line.size for line in block.lines)
+    if fixed_size != original_size:
+        msg = (
+            f"apply_intro_fix: PuppetSoldier size changed "
+            f"({original_size} -> {fixed_size} bytes)"
+        )
+        raise ValueError(msg)
+    # render() re-stamps every #_<hex> anchor to its new (reordered) address
+    # using each line's already-correct size; reparsed with a plain Line (not
+    # from_content(), which would hit the same truncated-slice sizing issue
+    # as above) since the addresses are now final text, not bookkeeping.
+    unit.lines[start:end] = [
+        Line.from_line(text) for text in block.render().splitlines()
+    ]
+
+
 # ---------------------------------------------------------------------------
 # main.asm: pull in the graft banks + pad the ROM to a clean 2 MB
 # ---------------------------------------------------------------------------
@@ -1430,6 +1493,7 @@ def build(
     usdasm: Path,
     jpdasm: Path,
     changes: bool,
+    intro_fix: bool = True,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Rom:
@@ -1448,7 +1512,9 @@ def build(
     independently fills every *bank-level* gap). ``nop_padbyte_threshold`` is
     separate: it only governs the baseline's byte-neutral filler at a
     ``changes``-guarded edit site (see :func:`nop_fill`), never a bank-level
-    free-ROM region. Player
+    free-ROM region. ``intro_fix`` (only meaningful alongside ``changes``)
+    applies :func:`apply_intro_fix`; ``False`` leaves JP 1.0's intro
+    guard-sprite bug exactly as it shipped. Player
     names are a 6-character field.
     """
     sources = Sources(
@@ -1481,6 +1547,8 @@ def build(
         english.add(relocation)
     if changes:
         apply_base_edits(english)
+        if intro_fix:
+            apply_intro_fix(english)
     patch_main_asm(english)
     return english
 

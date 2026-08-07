@@ -207,6 +207,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="after deploying, check the base edits against the frozen hashes",
     )
     parser.add_argument(
+        "--no-intro-fix",
+        action="store_true",
+        help="keep JP 1.0's intro-cutscene guard-sprite bug (a clobbered "
+        "register makes every guard draw with a spear instead of its "
+        "intended sprite); by default this patcher reorders the routine to "
+        "match the US ROM's already-correct behavior",
+    )
+    parser.add_argument(
         "--usdasm", type=Path, help="US disassembly checkout (default: cached)"
     )
     parser.add_argument(
@@ -257,6 +265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         usdasm=usdasm,
         jpdasm=jpdasm,
         changes=not args.baseline,
+        intro_fix=not args.no_intro_fix,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,
     )

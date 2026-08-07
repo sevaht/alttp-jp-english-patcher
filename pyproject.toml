@@ -96,9 +96,11 @@ select = [
 
 # generate.py is intentionally a set of big, self-contained subsystem
 # generators (each subsystem's constants + helpers + build inline in one
-# function), so the per-function complexity/statement caps do not apply.
+# function), so the per-function complexity/statement/argument caps do not
+# apply (build() in particular is a driver that fans a growing set of
+# independent toggles out to its subsystems).
 [tool.ruff.lint.per-file-ignores]
-"src/alttp_jp_english_patcher/generate.py" = ["C901", "PLR0915"]
+"src/alttp_jp_english_patcher/generate.py" = ["C901", "PLR0913", "PLR0915"]
 "checks" = ["S603"]
 "tests/**/*" = ["PLR2004", "S101"]
 

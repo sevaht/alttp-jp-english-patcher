@@ -50,7 +50,7 @@ omit them). The command clones the two disassembly *sources* it reads from
 | Step | Result in the target |
 | --- | --- |
 | Populate from jpdasm | the pristine JP disassembly's support files: `asarmon.exe`, the reference `.asm`, the `bin/` scaffolding, `Makefile`/`_build.bat`, `LICENSE`; its own `binextract.py` becomes `binextract-jp.py` |
-| Generate the whole program | base `bank_00/0C/0D/0E/13/18/1C.asm` hooked in place; graft `bank_20/22/23/26/27/2C/2D/2E.asm` beside them; `main.asm` wired (`bank_2X` includes + 2 MB padding); every untouched unit round-tripped |
+| Generate the whole program | base `bank_00/0C/0D/0E/13/18/1C/1D.asm` hooked in place; graft `bank_20/22/23/26/27/2C/2D/2E.asm` beside them; `main.asm` wired (`bank_2X` includes + 2 MB padding); every untouched unit round-tripped |
 | Deploy tooling | `binextract-us.py` (US assets), a `binextract.py` stub that runs both extractors, `build_english_rom.sh`, an English `README.md`, and `.gitignore` rules for the ROM-derived `english/*` blobs |
 | Copy ROMs | any supplied `--jp-rom` / `--us-rom` land as `alttp.sfc` / `alttp-us.sfc` |
 

@@ -51,6 +51,7 @@ BASE_BANKS = (
     "bank_13",
     "bank_18",
     "bank_1C",
+    "bank_1D",
 )
 
 

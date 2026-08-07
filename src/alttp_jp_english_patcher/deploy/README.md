@@ -27,6 +27,17 @@ fonts can actually show:
   progress) is untouched, and confirming a name returns you to file select
   just like naming a brand-new file does.
 
+### Intro cutscene guards
+
+JP 1.0 has a programming bug (see
+[TCRF](https://tcrf.net/index.php?title=The_Legend_of_Zelda:_A_Link_to_the_Past),
+"Introduction") where a stray write clobbers the register a check relies on,
+so every guard in the opening cutscene draws with a spear instead of its
+intended sprite. This build reorders the routine (matching how the US ROM
+already does it) so the check works and guards draw correctly; pass
+`--no-intro-fix` when generating to keep JP 1.0's original (buggy) behavior
+instead.
+
 ---
 
 ## Building
@@ -46,7 +57,7 @@ python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
 
 On Windows, run `binextract.py`, then `_build.bat`. `make` also works on any
 platform with `asarmon` on `PATH`. All three produce `alttp-english.sfc`; a
-correct default build has MD5 `f54bd5453bbb468b16e562f061b69970`.
+correct default build has MD5 `cd7650b3fb72901d3706efdf131aadb1`.
 
 ## Binaries
 
