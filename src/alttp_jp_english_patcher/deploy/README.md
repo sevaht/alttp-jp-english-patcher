@@ -29,14 +29,12 @@ fonts can actually show:
 
 ### Intro cutscene guards
 
-JP 1.0 has a programming bug (see
-[TCRF](https://tcrf.net/index.php?title=The_Legend_of_Zelda:_A_Link_to_the_Past),
-"Introduction") where a stray write clobbers the register a check relies on,
-so every guard in the opening cutscene draws with a spear instead of its
-intended sprite. This build reorders the routine (matching how the US ROM
-already does it) so the check works and guards draw correctly; pass
-`--no-intro-fix` when generating to keep JP 1.0's original (buggy) behavior
-instead.
+JP 1.0 has a programming bug where a stray write clobbers the register a
+check relies on, so every guard in the opening cutscene draws with a spear
+instead of its intended sprite. This build reorders the routine (matching
+how the US ROM already does it) so the check works and guards draw
+correctly; pass `--no-intro-fix` when generating to keep JP 1.0's original
+(buggy) behavior instead.
 
 ### Credits
 
@@ -45,13 +43,20 @@ US Latin font used everywhere else — JP's credits text is already English,
 and its font reads better than a straight conversion would, so the credits
 intentionally look different from the rest of the game. By default this
 build also fixes a handful of JP 1.0 translation mistakes to match the US
-release (see [TCRF](https://tcrf.net/index.php?title=The_Legend_of_Zelda:_A_Link_to_the_Past),
-"Ending"): "THE LOYAL PRIEST" → "THE LOYAL SAGE", "FINGER WEBS FOR SALE" →
+release: "THE LOYAL PRIEST" → "THE LOYAL SAGE", "FINGER WEBS FOR SALE" →
 "FLIPPERS FOR SALE" (centered — the US release left it off-center),
 "OCARINA BOY PLAYS AGAIN" → "FLUTE BOY PLAYS AGAIN", "GANNON'S TOWER" →
 "GANON'S TOWER", and adds the US-only "ENGLISH SCRIPT WRITERS" attribution.
 Pass `--keep-jp-credits` when generating to leave the credits text exactly
 as JP 1.0 shipped it (the font still changes back to JP's own either way).
+
+### Weathercock
+
+JP 1.0 and the US ROM both ship an animated overworld "weathercock" (windmill
+vane) decoration whose right end is missing a bordering pixel, across all 3
+of its animation frames — the tip looks left open instead of closed off. This
+build adds that pixel to match the EU release; pass `--no-weathercock-fix`
+when generating to keep JP 1.0/US's original (open-ended) look instead.
 
 ---
 

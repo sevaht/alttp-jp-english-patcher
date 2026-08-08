@@ -1548,7 +1548,12 @@ def _address_of_line(english: Rom, name: str, needle: str) -> int:
     return address
 
 
-def apply_base_edits(english: Rom, *, keep_jp_credits: bool = False) -> None:
+def apply_base_edits(
+    english: Rom,
+    *,
+    keep_jp_credits: bool = False,
+    weathercock_fix: bool = True,
+) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
     # InitializeMemoryAndSRAM, BEFORE it zeroes any main slot's $3E1 word whose
@@ -1590,6 +1595,49 @@ def apply_base_edits(english: Rom, *, keep_jp_credits: bool = False) -> None:
     english.set_operand(0x00E557, "LDA.b #TheFont>>16")
     english.set_operand(0x00E563, "LDA.w #TheFont")
     english.set_operand(0x00E568, "LDX.w #(TheFont_end-TheFont)/2-1")
+    if weathercock_fix:
+        # The animated "weathercock" (windmill vane) VRAM tile ($1DE) cycles
+        # between 3 pre-decompressed variants (a periodic DMA-source swap,
+        # not a re-decompression). JP 1.0 and the US ROM leave the vane's
+        # right end open -- missing the bordering pixel that closes off its
+        # tip -- in all 3; the EU release adds it (bit 0 of the tile's
+        # row-6-bitplane-0 and row-7-bitplane-1 bytes, cleared). Each pair
+        # sits in a literal ("raw copy") run -- the tile's own pixel data
+        # verbatim, not a compressed/back-referenced encoding -- confirmed
+        # by decompressing GFX_5A/GFX_5B (bank $14) in Python and diffing
+        # against the same sheets decompressed from an EU ROM.
+        english.set_operand(
+            _address_of_line(
+                english,
+                "GFX_5A",
+                "db $3C, $10, $14, $00, $67, $00, $A7, $03",
+            ),
+            "db $3C, $10, $14, $00, $66, $00, $A7, $02",
+            comment="[ENG-GFX] EU-matching weathercock fix",
+        )
+        english.set_operand(
+            _address_of_line(
+                english,
+                "GFX_5A",
+                "db $00, $34, $00, $2C, $08, $7F, $18, $BF",
+            ),
+            "db $00, $34, $00, $2C, $08, $7E, $18, $BF",
+            comment="[ENG-GFX] EU-matching weathercock fix",
+        )
+        english.set_operand(
+            _address_of_line(english, "GFX_5A", "db $0B, $00, $00"),
+            "db $0A, $00, $00",
+            comment="[ENG-GFX] EU-matching weathercock fix",
+        )
+        english.set_operand(
+            _address_of_line(
+                english,
+                "GFX_5B",
+                "db $1C, $08, $1C, $00, $77, $00, $A7, $03",
+            ),
+            "db $1C, $08, $1C, $00, $76, $00, $A7, $02",
+            comment="[ENG-GFX] EU-matching weathercock fix",
+        )
     # Credits keeps its own JP-native font (see credits_bank), but its
     # scene-load and staff-scroll init each reload a font via
     # DecompressFontGFX (bank_0E) / TransferFontToVRAM (bank_00) -- the same
@@ -1650,8 +1698,8 @@ def apply_base_edits(english: Rom, *, keep_jp_credits: bool = False) -> None:
 
 def apply_intro_fix(english: Rom) -> None:
     """Fix JP 1.0's intro-cutscene guard-sprite bug in ``PuppetSoldier``
-    (bank $1D) -- see TCRF's ALTTP page, "Introduction". ``PuppetSoldier``
-    picks sprite $41 (sword) or $43 (spear) with ``LDA $05 / ORA #$30 / STA
+    (bank $1D). ``PuppetSoldier`` picks sprite $41 (sword) or $43 (spear)
+    with ``LDA $05 / ORA #$30 / STA
     $0F50,X`` (the palette) followed by ``CMP #$39``; JP 1.0 sandwiches an
     unrelated ``LDA #$10 / STA $0E60,X`` between those two, clobbering A, so
     the CMP always fails and every guard draws as the spear sprite. The US
@@ -1685,7 +1733,7 @@ def apply_intro_fix(english: Rom) -> None:
         "CMP.b #$39",
         notes(
             [
-                "; [ENG-INTRO] JP 1.0 bug fix (see TCRF): LDA #$10/STA",
+                "; [ENG-INTRO] JP 1.0 bug fix: LDA #$10/STA",
                 "; $0E60,X used to sit between the palette store above and",
                 "; this CMP, clobbering A so the check always failed and",
                 "; this guard always drew with the spear sprite ($43).",
@@ -1794,6 +1842,7 @@ def build(
     jpdasm: Path,
     changes: bool,
     intro_fix: bool = True,
+    weathercock_fix: bool = True,
     keep_jp_credits: bool = False,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
@@ -1815,11 +1864,14 @@ def build(
     ``changes``-guarded edit site (see :func:`nop_fill`), never a bank-level
     free-ROM region. ``intro_fix`` (only meaningful alongside ``changes``)
     applies :func:`apply_intro_fix`; ``False`` leaves JP 1.0's intro
-    guard-sprite bug exactly as it shipped. ``keep_jp_credits`` (also only
-    meaningful alongside ``changes``) skips :func:`credits_bank`'s handful
-    of JP-mistake text fixes, leaving the (already JP-fonted) credits text
-    exactly as JP 1.0 shipped it. Player
-    names are a 6-character field.
+    guard-sprite bug exactly as it shipped. ``weathercock_fix`` (also only
+    meaningful alongside ``changes``) closes off the animated weathercock's
+    open-looking right end to match the EU release, in ``apply_base_edits``;
+    ``False`` leaves it exactly as JP 1.0/US shipped it. ``keep_jp_credits``
+    (also only meaningful alongside ``changes``)
+    skips :func:`credits_bank`'s handful of JP-mistake text fixes, leaving
+    the (already JP-fonted) credits text exactly as JP 1.0 shipped it.
+    Player names are a 6-character field.
     """
     sources = Sources(
         us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
@@ -1852,7 +1904,11 @@ def build(
     for relocation in relocations:
         english.add(relocation)
     if changes:
-        apply_base_edits(english, keep_jp_credits=keep_jp_credits)
+        apply_base_edits(
+            english,
+            keep_jp_credits=keep_jp_credits,
+            weathercock_fix=weathercock_fix,
+        )
         if intro_fix:
             apply_intro_fix(english)
     patch_main_asm(english)

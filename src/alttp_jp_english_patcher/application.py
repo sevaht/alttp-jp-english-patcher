@@ -215,6 +215,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "match the US ROM's already-correct behavior",
     )
     parser.add_argument(
+        "--no-weathercock-fix",
+        action="store_true",
+        help="keep the animated weathercock (windmill vane) tile's right "
+        "end looking open (missing a bordering pixel), exactly as JP "
+        "1.0/US shipped it; by default this patcher closes it off to "
+        "match the EU release",
+    )
+    parser.add_argument(
         "--keep-jp-credits",
         action="store_true",
         help="leave the (JP-fonted) credits text exactly as JP 1.0 shipped "
@@ -275,6 +283,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         jpdasm=jpdasm,
         changes=not args.baseline,
         intro_fix=not args.no_intro_fix,
+        weathercock_fix=not args.no_weathercock_fix,
         keep_jp_credits=args.keep_jp_credits,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,
