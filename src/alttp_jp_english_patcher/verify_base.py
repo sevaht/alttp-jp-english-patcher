@@ -45,6 +45,7 @@ def _reference_source_path() -> Path:
 # The base banks the graft hooks (the only base banks it changes).
 BASE_BANKS = (
     "bank_00",
+    "bank_02",
     "bank_0C",
     "bank_0D",
     "bank_0E",

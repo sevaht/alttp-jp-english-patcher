@@ -38,6 +38,21 @@ already does it) so the check works and guards draw correctly; pass
 `--no-intro-fix` when generating to keep JP 1.0's original (buggy) behavior
 instead.
 
+### Credits
+
+The ending credits keep JP 1.0's own font rather than being converted to the
+US Latin font used everywhere else — JP's credits text is already English,
+and its font reads better than a straight conversion would, so the credits
+intentionally look different from the rest of the game. By default this
+build also fixes a handful of JP 1.0 translation mistakes to match the US
+release (see [TCRF](https://tcrf.net/index.php?title=The_Legend_of_Zelda:_A_Link_to_the_Past),
+"Ending"): "THE LOYAL PRIEST" → "THE LOYAL SAGE", "FINGER WEBS FOR SALE" →
+"FLIPPERS FOR SALE" (centered — the US release left it off-center),
+"OCARINA BOY PLAYS AGAIN" → "FLUTE BOY PLAYS AGAIN", "GANNON'S TOWER" →
+"GANON'S TOWER", and adds the US-only "ENGLISH SCRIPT WRITERS" attribution.
+Pass `--keep-jp-credits` when generating to leave the credits text exactly
+as JP 1.0 shipped it (the font still changes back to JP's own either way).
+
 ---
 
 ## Building
@@ -57,7 +72,7 @@ python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
 
 On Windows, run `binextract.py`, then `_build.bat`. `make` also works on any
 platform with `asarmon` on `PATH`. All three produce `alttp-english.sfc`; a
-correct default build has MD5 `cd7650b3fb72901d3706efdf131aadb1`.
+correct default build has MD5 `d0fdacf8f4ebf2bd37dba3f36dc0062b`.
 
 ## Binaries
 

@@ -467,55 +467,286 @@ def font_upload(sources: Sources, *, changes: bool) -> Relocation:
     return relocation
 
 
-def credits_bank(sources: Sources, *, changes: bool) -> Relocation:
-    """Bank ``$2E``: the JP credits reader + tables, mirror-placed, with the
-    glyph map swapped to the US table so credits render in the US Latin font.
+def credits_bank(
+    sources: Sources, *, changes: bool, keep_jp_credits: bool = False
+) -> Relocation:
+    """Bank ``$2E``: the JP credits reader + tables, mirror-placed, kept on
+    JP's own font and text -- the JP credits are already English, and its
+    own (bolder) font reads better than a US-font swap, so the credits look
+    different from the rest of the (US-fonted) game by design.
 
-    Placed in three contiguous groups (JP interleaves them with credits code we
-    do not relocate). The readers return long -- they are reached across banks
-    via bank_0E landing pads -- and keep only their EN_ names (the bare aliases
-    live under the pads in bank_0E), so no hooks/shared here.
+    Unless ``keep_jp_credits``, a handful of JP 1.0 mistakes fixed in the US
+    release are applied on top: THE LOYAL PRIEST -> SAGE, FINGER WEBS FOR
+    SALE -> FLIPPERS FOR SALE (re-centered -- the US left it off-center),
+    OCARINA BOY -> FLUTE BOY, GANNON'S TOWER -> GANON'S TOWER, and a new
+    ENGLISH SCRIPT WRITERS attribution section the US added and JP never
+    had. JP and US share one underlying character-code space for both
+    ``CreditsTextLine`` and the ``Credits_AddEndingSequenceText`` "SMALL"
+    captions (only the glyph-tile *pointer* tables ever differed -- now
+    unused), so every US byte reused below is verbatim, not re-encoded.
+
+    Every ``Credits_AddEndingSequenceText`` "SMALL"/location caption follows
+    one consistent centering rule: even length -> perfectly centered, odd
+    length -> off by exactly one column (it can't split evenly). The three
+    replaced/moved-length captions above stay on that same convention
+    rather than whatever their new word length happens to land on; one
+    further caption whose unmodified JP text broke the rule (SAHASRALAH'S
+    HOMECOMING) is nudged back in line too, still gated on
+    ``keep_jp_credits`` since it's a deviation from pure JP 1.0.
+
+    Placed in three contiguous groups (JP interleaves them with credits code
+    we do not relocate). The readers return long -- they are reached across
+    banks via bank_0E landing pads -- and keep only their EN_ names (the bare
+    aliases live under the pads in bank_0E), so no hooks/shared here.
     """
-    us, jp = sources.us, sources.jp
+    jp = sources.jp
 
-    @dataclass(frozen=True)
-    class Region:
-        """One contiguous credits run, mirror-placed as a unit. ``us_glyphs``
-        are the leading glyph->tile tables whose ``dw`` values are re-pointed
-        at the US font (swapped from the identically-named US block/pool, same
-        length so byte-neutral); ``jp_kept`` are the text/code/data members
-        left as JP. Placed in order: glyph tables first, then kept."""
-
-        us_glyphs: tuple[Block | Pool, ...]
-        jp_kept: tuple[Block | Pool, ...]
-
-        @property
-        def members(self) -> tuple[Block | Pool, ...]:
-            return (*self.us_glyphs, *self.jp_kept)
-
-    regions = (
-        Region(
-            us_glyphs=(
-                Block("Credits_CharacterToTile"),
-                Block("CreditsBlankFillTile"),
-            ),
-            jp_kept=(Pool("CreditsTextLine"),),
+    groups: tuple[tuple[Block | Pool, ...], ...] = (
+        (
+            Block("Credits_CharacterToTile"),
+            Block("CreditsBlankFillTile"),
+            Pool("CreditsTextLine"),
         ),
-        Region(
-            # the pool holds the glyph .digits (swapped) then data offsets that
-            # match US, so the whole pool re-points byte-neutrally.
-            us_glyphs=(Pool("Credits_AddNextAttribution"),),
-            jp_kept=(Block("Credits_AddNextAttribution"),),
+        (
+            Pool("Credits_AddNextAttribution"),
+            Block("Credits_AddNextAttribution"),
         ),
-        Region(
-            us_glyphs=(),  # ending-sequence tilemap keeps JP palette attrs
-            jp_kept=(
-                Pool("Credits_AddEndingSequenceText"),
-                Block("Credits_AddEndingSequenceText"),
-            ),
+        (
+            Pool("Credits_AddEndingSequenceText"),
+            Block("Credits_AddEndingSequenceText"),
         ),
     )
     readers = ("Credits_AddNextAttribution", "Credits_AddEndingSequenceText")
+
+    def edit_priest_to_sage(block: Assembly) -> None:
+        # 14 chars, even -- centered means $C4D2, not JP's $C4D0 (which
+        # centered 16-char PRIEST).
+        block.splice(
+            "; SMALL: THE LOYAL PRIEST",
+            notes(["; SMALL: THE LOYAL SAGE"])
+            + datas(
+                [
+                    "dw $6962, $1B00 ; VRAM $C4D2 | 28 bytes",
+                    "db $2D, $21, $1E, $9F, $25, $28, $32, $1A",
+                    "db $25, $9F, $2C, $1A, $20, $1E",
+                ]
+            )
+            + notes([""]),
+            until="; TOP: SANCTUARY",
+        )
+
+    def edit_flippers_for_sale(block: Assembly) -> None:
+        # 17 chars, odd -- US kept JP's $C4CC (centered for 20-char FINGER
+        # WEBS), landing off-center; $C4CE is the best achievable (-1).
+        block.splice(
+            "; SMALL: FINGER WEBS FOR SALE",
+            notes(["; SMALL: FLIPPERS FOR SALE"])
+            + datas(
+                [
+                    "dw $6762, $2100 ; VRAM $C4CE | 34 bytes",
+                    "db $1F, $25, $22, $29, $29, $1E, $2B, $2C",
+                    "db $9F, $1F, $28, $2B, $9F, $2C, $1A, $25",
+                    "db $1E",
+                ]
+            )
+            + notes([""]),
+            until="; TOP: ZORA'S WATERFALL",
+        )
+
+    def edit_flute_boy(block: Assembly) -> None:
+        # 21 chars, odd -- JP's $C4C8 centered 23-char OCARINA BOY (also
+        # odd) at -1; keeping it for the 2-shorter FLUTE BOY drifts to -3.
+        # $C4CA is the best achievable (-1), same idea as FLIPPERS above.
+        block.splice(
+            "; SMALL: OCARINA BOY PLAYS AGAIN",
+            notes(["; SMALL: FLUTE BOY PLAYS AGAIN"])
+            + datas(
+                [
+                    "dw $6562, $2900 ; VRAM $C4CA | 42 bytes",
+                    "db $1F, $25, $2E, $2D, $1E, $9F, $1B, $28",
+                    "db $32, $9F, $29, $25, $1A, $32, $2C, $9F",
+                    "db $1A, $20, $1A, $22, $27",
+                ]
+            )
+            + notes([""]),
+            until="; TOP: HAUNTED GROVE",
+        )
+
+    def edit_recenter_sahasralahs_homecoming(block: Assembly) -> None:
+        # 23 chars, odd -- the one unmodified-text caption at +1 instead of
+        # the -1 every other JP caption of its length uses; $C4C8 is -1.
+        block.replace(
+            "dw $6562, $2D00 ; VRAM $C4CA | 46 bytes",
+            "dw $6462, $2D00 ; VRAM $C4C8 | 46 bytes",
+            1,
+        )
+        # The apostrophe's top-stroke is a separate 1-character .chargfx
+        # entry, drawn on the row above to sit over the apostrophe in the
+        # line just moved -- it has to shift the same -1 column with it.
+        block.replace(
+            "dw $4F62, $0100 ; VRAM $C49E | 2 bytes",
+            "dw $4E62, $0100 ; VRAM $C49C | 2 bytes",
+            1,
+        )
+
+    def edit_ganons_tower(block: Assembly) -> None:
+        # Both forms drop the second "N" (GANNON'S -> GANON'S); the
+        # centering offset is unaffected either way (compact form still
+        # solves 2*offset+len=32 one letter shorter; the LEVEL# form uses a
+        # fixed offset like every other LEVEL# line, not per-line centering).
+        block.splice(
+            "; 8 GANNON'S TOWER",
+            notes(["; 8 GANON'S TOWER", ".line6B"])
+            + datas(
+                [
+                    "db $08, $1D ; spacing, 0x1E bytes",
+                    "db $5B, $9F, $63, $5D, $6A, $6B, $6A, $77",
+                    "db $6F, $9F, $70, $6B, $73, $61, $6E",
+                ]
+            )
+            + notes([""]),
+            until="; LEVEL8 GANNON'S TOWER",
+        )
+        block.splice(
+            "; LEVEL8 GANNON'S TOWER",
+            notes(["; LEVEL8 GANON'S TOWER", ".line6C"])
+            + datas(
+                [
+                    "db $03, $27 ; spacing, 0x28 bytes",
+                    "db $0B, $04, $15, $04, $0B, $81, $9F, $89",
+                    "db $83, $90, $91, $90, $9D, $95, $9F, $96",
+                    "db $91, $99, $87, $94",
+                ]
+            )
+            + notes([""]),
+            until="; TOTAL GAMES PLAYED",
+        )
+
+    def edit_add_english_script_writers(block: Assembly) -> None:
+        # US-only attribution JP never had. Bytes are US's own, verbatim
+        # (same character-code space as JP -- see the docstring); the two
+        # header bytes are a centering offset + encoded length, also
+        # independent of JP/US, so no re-derivation is needed either.
+        # New lines get descriptive labels (not JP's or US's own .lineXX
+        # numbering, which already means different things in each ROM) and
+        # land right before "SPECIAL THANKS TO", mirroring where the US
+        # inserts them relative to its own "TOMOAKI KUROUME".
+        block.insert_before(
+            "; SPECIAL THANKS TO",
+            notes(
+                [
+                    "; [ENG-CREDITS] ENGLISH SCRIPT WRITERS (not in JP 1.0;",
+                    "; added to match the US release's attribution).",
+                    ".lineEnglishScriptWriters",
+                ]
+            )
+            + datas(
+                [
+                    "db $05, $2B ; spacing, 0x2C bytes",
+                    "db $1E, $27, $20, $25, $22, $2C, $21, $9F",
+                    "db $2C, $1C, $2B, $22, $29, $2D, $9F, $30",
+                    "db $2B, $22, $2D, $1E, $2B, $2C",
+                ]
+            )
+            + notes(["", "; [ENG-CREDITS] DANIEL OWSEN", ".lineDanielOwsenA"])
+            + datas(
+                [
+                    "db $0A, $17 ; spacing, 0x18 bytes",
+                    "db $60, $5D, $6A, $65, $61, $68, $9F, $6B",
+                    "db $73, $6F, $61, $6A",
+                ]
+            )
+            + notes(["", "; [ENG-CREDITS] DANIEL OWSEN", ".lineDanielOwsenB"])
+            + datas(
+                [
+                    "db $0A, $17 ; spacing, 0x18 bytes",
+                    "db $86, $83, $90, $8B, $87, $8E, $9F, $91",
+                    "db $99, $95, $87, $90",
+                ]
+            )
+            + notes(
+                ["", "; [ENG-CREDITS] HIROYUKI YAMADA", ".lineHiroyukiYamadaA"]
+            )
+            + datas(
+                [
+                    "db $08, $1D ; spacing, 0x1E bytes",
+                    "db $64, $65, $6E, $6B, $75, $71, $67, $65",
+                    "db $9F, $75, $5D, $69, $5D, $60, $5D",
+                ]
+            )
+            + notes(
+                ["", "; [ENG-CREDITS] HIROYUKI YAMADA", ".lineHiroyukiYamadaB"]
+            )
+            + datas(
+                [
+                    "db $08, $1D ; spacing, 0x1E bytes",
+                    "db $8A, $8B, $94, $91, $9B, $97, $8D, $8B",
+                    "db $9F, $9B, $83, $8F, $83, $86, $83",
+                ]
+            )
+            + notes([""]),
+        )
+        # Grow the .pointers run between JP's own TOMOAKI KUROUME
+        # (.line42) and SPECIAL THANKS TO (.line43) from JP's existing 10
+        # blank slots to the US's own 26-slot pacing around this section
+        # (8 blank / title / 3 blank / name / name / 2 blank / name / name
+        # / 8 blank) -- a net +16 entries.
+        after = block.find("dw .line42-.data") + 1
+        before = block.find("dw .line43-.data", after)
+        if before - after != 10:  # noqa: PLR2004
+            msg = (
+                "credits_bank: expected 10 blank .pointers entries between "
+                f".line42/.line43, found {before - after}"
+            )
+            raise ValueError(msg)
+        blank = "dw .line01-.data"
+        new_pointers = (
+            [blank] * 8
+            + ["dw .lineEnglishScriptWriters-.data"]
+            + [blank] * 3
+            + ["dw .lineDanielOwsenA-.data", "dw .lineDanielOwsenB-.data"]
+            + [blank] * 2
+            + [
+                "dw .lineHiroyukiYamadaA-.data",
+                "dw .lineHiroyukiYamadaB-.data",
+            ]
+            + [blank] * 8
+        )
+        block.lines[after:before] = datas(new_pointers)
+        # .stats_lines (same pool) holds 14 absolute $CA*2 position markers
+        # -- compared against the scroll position to know when to draw each
+        # quest-history number (Credits_AddNextAttribution) -- and all 14
+        # sit after the insertion point above (CA 326-390, vs. the
+        # insertion's CA 269), so each needs +$20 (16 lines * 2) to keep
+        # landing on the same logical quest-history rows, not 16 lines early.
+        block.splice(
+            "dw $028C",
+            datas(
+                [
+                    "dw $02AC",
+                    "dw $02B4",
+                    "dw $02BC",
+                    "dw $02C4",
+                    "dw $02CC",
+                    "dw $02D6",
+                    "dw $02DE",
+                    "dw $02E6",
+                    "dw $02EE",
+                    "dw $02F6",
+                    "dw $02FE",
+                    "dw $0306",
+                    "dw $030E",
+                    "dw $032C",
+                ]
+            ),
+            until="pool off",
+        )
+
+    def edit_grow_pointer_bound(block: Assembly) -> None:
+        # +32 bytes (16 more .pointers entries, 2 bytes each) for
+        # edit_add_english_script_writers's timeline growth above -- this is
+        # how far the reader is willing to walk .pointers before stopping.
+        block.replace("CPY.w #$0310", "CPY.w #$0330", 1)
 
     # The readers are the hooks: a same-bank caller in bank_0E's credits driver
     # (not relocated) reaches them, so caller-analysis gives each a landing pad
@@ -523,19 +754,29 @@ def credits_bank(sources: Sources, *, changes: bool) -> Relocation:
     relocation = Relocation(
         hooked=readers,
         carried=frozenset(
-            member.name for region in regions for member in region.members
+            member.name for members in groups for member in members
         ),
         pad_region="NULL_0EEDFB",
         pad_header=_redirect("2E", "en_credits.asm"),
         changes=changes,
     )
-    for region in regions:
-        group = jp.concat(list(region.members))
+    for members in groups:
+        group = jp.concat(list(members))
+        names = {member.name for member in members}
         if changes:
-            if region.us_glyphs:
-                group.overlay_dw(us.concat(list(region.us_glyphs)).dw_rows())
-            if any(member.name in readers for member in region.members):
+            if names & set(readers):
                 group.return_long()
+            if not keep_jp_credits:
+                if "CreditsTextLine" in names:
+                    edit_ganons_tower(group)
+                    edit_add_english_script_writers(group)
+                if "Credits_AddNextAttribution" in names:
+                    edit_grow_pointer_bound(group)
+                if "Credits_AddEndingSequenceText" in names:
+                    edit_priest_to_sage(group)
+                    edit_flippers_for_sale(group)
+                    edit_flute_boy(group)
+                    edit_recenter_sahasralahs_homecoming(group)
         start = require_start(group)
         relocation.place(
             group, mirror(start), f"credits region, mirror of JP ${start:06X}."
@@ -1298,7 +1539,16 @@ def _wire_hooks(english: Rom, jp: Rom, relocations: list[Relocation]) -> None:
             )
 
 
-def apply_base_edits(english: Rom) -> None:
+def _address_of_line(english: Rom, name: str, needle: str) -> int:
+    """The live address of the ``needle``-matching line in block ``name``."""
+    address = english.block(name).line(needle).address
+    if address is None:
+        msg = f"{name}: {needle!r} is not a live-anchored instruction"
+        raise ValueError(msg)
+    return address
+
+
+def apply_base_edits(english: Rom, *, keep_jp_credits: bool = False) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
     # InitializeMemoryAndSRAM, BEFORE it zeroes any main slot's $3E1 word whose
@@ -1340,6 +1590,56 @@ def apply_base_edits(english: Rom) -> None:
     english.set_operand(0x00E557, "LDA.b #TheFont>>16")
     english.set_operand(0x00E563, "LDA.w #TheFont")
     english.set_operand(0x00E568, "LDX.w #(TheFont_end-TheFont)/2-1")
+    # Credits keeps its own JP-native font (see credits_bank), but its
+    # scene-load and staff-scroll init each reload a font via
+    # DecompressFontGFX (bank_0E) / TransferFontToVRAM (bank_00) -- the same
+    # two routines the text engine/font upload hook for the English VWF
+    # font. Their English forms (a no-op, and a TheFont upload) don't cover
+    # JP's credits-only glyph tiles, so these two credits call sites need
+    # the preserved JP originals; every other caller of the pair (the
+    # game's normal font loads) is unaffected and keeps the English hooks.
+    english.rename("UNREACHABLE_DecompressFontGFX", "JP_DecompressFontGFX")
+    english.rename("UNREACHABLE_TransferFontToVRAM", "JP_TransferFontToVRAM")
+    font_load_callers = (
+        "Credits_LoadOverworldScene_PrepGFX",
+        "Credits_InitializeTheActualCredits",
+    )
+    for caller in font_load_callers:
+        english.rewrite_reference(
+            _address_of_line(english, caller, "JSL DecompressFontGFX"),
+            "DecompressFontGFX",
+            "JP_DecompressFontGFX",
+        )
+        english.rewrite_reference(
+            _address_of_line(english, caller, "JSL TransferFontToVRAM"),
+            "TransferFontToVRAM",
+            "JP_TransferFontToVRAM",
+        )
+    # DecompressFontGFX depends on a WRAM offset table (TEXTDECOMP, $7F5B00)
+    # that only BuildSomeTextMasks populates; the table is static once
+    # built, so BuildSomeTextMasks's own no-op English hook is harmless as
+    # long as the JP original still runs once, at boot, via its one caller.
+    english.rename("UNREACHABLE_BuildSomeTextMasks", "JP_BuildSomeTextMasks")
+    english.rewrite_reference(
+        _address_of_line(
+            english, "Intro_CreateTextPointers", "JSL BuildSomeTextMasks"
+        ),
+        "BuildSomeTextMasks",
+        "JP_BuildSomeTextMasks",
+    )
+    if not keep_jp_credits:
+        # Credits_FadeColorAndBeginAnimating ends the staff-credits scroll
+        # once a frame counter ($EA, advancing the scroll line $CA by 1
+        # every 8 ticks) reaches a hardcoded terminal value; +128 ($80)
+        # accounts for edit_add_english_script_writers's 16 extra lines
+        # (16 lines * 8 ticks/line), preserving the original pause length
+        # between the last line and the cutoff.
+        english.set_operand(
+            _address_of_line(
+                english, "Credits_FadeColorAndBeginAnimating", "CMP.w #$0CD8"
+            ),
+            "CMP.w #$0D58",
+        )
     # File-select: keep the one in-bank CopySaveToWRAM reference pointing at
     # the preserved JP original (which the graft leaves in place, unmoved -- so
     # no org re-pin is needed).
@@ -1494,6 +1794,7 @@ def build(
     jpdasm: Path,
     changes: bool,
     intro_fix: bool = True,
+    keep_jp_credits: bool = False,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Rom:
@@ -1514,7 +1815,10 @@ def build(
     ``changes``-guarded edit site (see :func:`nop_fill`), never a bank-level
     free-ROM region. ``intro_fix`` (only meaningful alongside ``changes``)
     applies :func:`apply_intro_fix`; ``False`` leaves JP 1.0's intro
-    guard-sprite bug exactly as it shipped. Player
+    guard-sprite bug exactly as it shipped. ``keep_jp_credits`` (also only
+    meaningful alongside ``changes``) skips :func:`credits_bank`'s handful
+    of JP-mistake text fixes, leaving the (already JP-fonted) credits text
+    exactly as JP 1.0 shipped it. Player
     names are a 6-character field.
     """
     sources = Sources(
@@ -1528,7 +1832,9 @@ def build(
             nop_padbyte_threshold=nop_padbyte_threshold,
         ),
         font_upload(sources, changes=changes),
-        credits_bank(sources, changes=changes),
+        credits_bank(
+            sources, changes=changes, keep_jp_credits=keep_jp_credits
+        ),
         item_menu(sources, changes=changes),
         file_select(
             sources,
@@ -1546,7 +1852,7 @@ def build(
     for relocation in relocations:
         english.add(relocation)
     if changes:
-        apply_base_edits(english)
+        apply_base_edits(english, keep_jp_credits=keep_jp_credits)
         if intro_fix:
             apply_intro_fix(english)
     patch_main_asm(english)

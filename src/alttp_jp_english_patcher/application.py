@@ -215,6 +215,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "match the US ROM's already-correct behavior",
     )
     parser.add_argument(
+        "--keep-jp-credits",
+        action="store_true",
+        help="leave the (JP-fonted) credits text exactly as JP 1.0 shipped "
+        "it; by default this patcher fixes a handful of JP 1.0 mistakes to "
+        "match the US release (THE LOYAL SAGE, FLIPPERS FOR SALE, FLUTE "
+        "BOY, GANON'S TOWER) and adds the US-only ENGLISH SCRIPT WRITERS "
+        "attribution",
+    )
+    parser.add_argument(
         "--usdasm", type=Path, help="US disassembly checkout (default: cached)"
     )
     parser.add_argument(
@@ -266,6 +275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         jpdasm=jpdasm,
         changes=not args.baseline,
         intro_fix=not args.no_intro_fix,
+        keep_jp_credits=args.keep_jp_credits,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,
     )
