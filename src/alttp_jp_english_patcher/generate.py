@@ -1553,6 +1553,7 @@ def apply_base_edits(
     *,
     keep_jp_credits: bool = False,
     weathercock_fix: bool = True,
+    keep_religious_imagery: bool = False,
 ) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
@@ -1638,6 +1639,38 @@ def apply_base_edits(
             "db $1C, $08, $1C, $00, $76, $00, $A7, $02",
             comment="[ENG-GFX] EU-matching weathercock fix",
         )
+    if not keep_religious_imagery:
+        # Eastern Palace's floor tile ($1A8, a 2x2 tilemap block) is a Star
+        # of David in JP 1.0; the US ROM swaps it for a generic tile. Two
+        # copies (GFX_19, GFX_1A -- both loaded together for this room) hold
+        # the same 23-byte literal run (3bpp source, bytes 0-22 of the
+        # 24-byte tile; byte 23 comes from a separate, shared "repeat word"
+        # command whose value already matches between JP and US, so it's
+        # left untouched). Confirmed by diffing this tile's live VRAM
+        # between an unmodified US ROM and this JP-English build, standing
+        # in the same spot in each.
+        for sheet in ("GFX_19", "GFX_1A"):
+            english.set_operand(
+                _address_of_line(
+                    english, sheet, "db $07, $FF, $0D, $FF, $11, $FF, $22, $FF"
+                ),
+                "db $07, $FF, $08, $FF, $11, $FF, $23, $FF",
+                comment="[ENG-GFX] US-matching Eastern Palace floor tile",
+            )
+            english.set_operand(
+                _address_of_line(
+                    english, sheet, "db $7F, $FF, $C4, $FF, $A8, $FF, $90, $FF"
+                ),
+                "db $41, $FF, $83, $FF, $96, $FF, $BC, $FF",
+                comment="[ENG-GFX] US-matching Eastern Palace floor tile",
+            )
+            english.set_operand(
+                _address_of_line(
+                    english, sheet, "db $03, $0F, $1F, $3F, $7F, $7F, $FF"
+                ),
+                "db $07, $0F, $1F, $3F, $7F, $FF, $FF",
+                comment="[ENG-GFX] US-matching Eastern Palace floor tile",
+            )
     # Credits keeps its own JP-native font (see credits_bank), but its
     # scene-load and staff-scroll init each reload a font via
     # DecompressFontGFX (bank_0E) / TransferFontToVRAM (bank_00) -- the same
@@ -1843,6 +1876,7 @@ def build(
     changes: bool,
     intro_fix: bool = True,
     weathercock_fix: bool = True,
+    keep_religious_imagery: bool = False,
     keep_jp_credits: bool = False,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
@@ -1867,11 +1901,14 @@ def build(
     guard-sprite bug exactly as it shipped. ``weathercock_fix`` (also only
     meaningful alongside ``changes``) closes off the animated weathercock's
     open-looking right end to match the EU release, in ``apply_base_edits``;
-    ``False`` leaves it exactly as JP 1.0/US shipped it. ``keep_jp_credits``
-    (also only meaningful alongside ``changes``)
-    skips :func:`credits_bank`'s handful of JP-mistake text fixes, leaving
-    the (already JP-fonted) credits text exactly as JP 1.0 shipped it.
-    Player names are a 6-character field.
+    ``False`` leaves it exactly as JP 1.0/US shipped it. ``keep_religious_
+    imagery`` (also only meaningful alongside ``changes``) leaves Eastern
+    Palace's Star-of-David floor tile exactly as JP 1.0 shipped it; by
+    default ``apply_base_edits`` swaps it for the US ROM's generic tile.
+    ``keep_jp_credits`` (also only meaningful alongside ``changes``) skips
+    :func:`credits_bank`'s handful of JP-mistake text fixes, leaving the
+    (already JP-fonted) credits text exactly as JP 1.0 shipped it. Player
+    names are a 6-character field.
     """
     sources = Sources(
         us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
@@ -1908,6 +1945,7 @@ def build(
             english,
             keep_jp_credits=keep_jp_credits,
             weathercock_fix=weathercock_fix,
+            keep_religious_imagery=keep_religious_imagery,
         )
         if intro_fix:
             apply_intro_fix(english)

@@ -58,6 +58,13 @@ of its animation frames — the tip looks left open instead of closed off. This
 build adds that pixel to match the EU release; pass `--no-weathercock-fix`
 when generating to keep JP 1.0/US's original (open-ended) look instead.
 
+### Eastern Palace floor tile
+
+JP 1.0 has a Star of David as a floor tile in Eastern Palace; the US ROM
+replaced it with a generic tile. By default this build swaps in the US ROM's
+version; pass `--keep-religious-imagery` when generating to keep JP 1.0's
+original tile instead.
+
 ---
 
 ## Building
@@ -77,7 +84,7 @@ python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
 
 On Windows, run `binextract.py`, then `_build.bat`. `make` also works on any
 platform with `asarmon` on `PATH`. All three produce `alttp-english.sfc`; a
-correct default build has MD5 `d0fdacf8f4ebf2bd37dba3f36dc0062b`.
+correct default build has MD5 `9a4f6adda78563bcfa868297c9582fbb`.
 
 ## Binaries
 

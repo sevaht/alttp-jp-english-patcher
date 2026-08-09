@@ -48,7 +48,7 @@ echo "SUCCESS -> $OUT  ($(stat -c%s "$OUT") bytes, md5 $MD5)"
 # Reference builds — a good build matches one of these two:
 #   default    US/Japanese save-slot migration on
 #   no-migrate patcher deployed with --no-save-compatibility
-MD5_DEFAULT="d0fdacf8f4ebf2bd37dba3f36dc0062b"
+MD5_DEFAULT="9a4f6adda78563bcfa868297c9582fbb"
 case "$MD5" in
   "$MD5_DEFAULT")   echo "  (verified: reference build)" ;;
   *) echo "  (note: matches no reference build — fine if you intended source changes; else re-run binextract.py / check your ROMs)" ;;
