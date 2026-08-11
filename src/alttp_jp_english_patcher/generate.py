@@ -1554,6 +1554,7 @@ def apply_base_edits(
     keep_jp_credits: bool = False,
     weathercock_fix: bool = True,
     keep_religious_imagery: bool = False,
+    epilepsy_fix: bool = True,
 ) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
@@ -1671,6 +1672,37 @@ def apply_base_edits(
                 "db $07, $0F, $1F, $3F, $7F, $FF, $FF",
                 comment="[ENG-GFX] US-matching Eastern Palace floor tile",
             )
+    if epilepsy_fix:
+        # OversaturateColor (bank $02) is the "bright" half of the shared
+        # full-screen flash effect: HandleScreenFlash alternates every frame
+        # between this and RestorePalettesAfterFlash while a WRAM counter
+        # ($0FF9) is nonzero, driving every screen-flash in the game
+        # (Agahnim's altar cutscene and boss lightning, Vitreous's and the
+        # Ether Medallion's lightning -- both spawned through the same
+        # Sprite_SpawnLightning -- and the Magic Bat's power-up flash).
+        # JP 1.0 boosts each of a color's 5-bit R/G/B channels by +14 (of a
+        # max 31) per flash frame, clamped; a later Japanese revision (JP
+        # header version byte $02, matching a "Virtual Console" ROM dump)
+        # tones this down to +2 -- Nintendo's photosensitive-epilepsy-safety
+        # pass on this game's flash effects. Confirmed the *only* real
+        # difference (not a relocation artifact -- most of the ROM's raw
+        # bytes differ between these two builds purely because later code
+        # shifted addresses around; HandleScreenFlash itself, and every
+        # $0FF9-duration constant checked, are byte-identical once that
+        # shift is accounted for) is these 3 add-immediate operands.
+        english.set_operand(
+            _address_of_line(english, "OversaturateColor", "ADC.w #$000E"),
+            "ADC.w #$0002",
+        )
+        english.set_operand(
+            _address_of_line(english, "OversaturateColor", "ADC.w #$01C0"),
+            "ADC.w #$0040",
+        )
+        english.set_operand(
+            _address_of_line(english, "OversaturateColor", "ADC.w #$3800"),
+            "ADC.w #$0800",
+            comment="[ENG-GFX] toned-down flash brightness (later JP rev)",
+        )
     # Credits keeps its own JP-native font (see credits_bank), but its
     # scene-load and staff-scroll init each reload a font via
     # DecompressFontGFX (bank_0E) / TransferFontToVRAM (bank_00) -- the same
@@ -1877,6 +1909,7 @@ def build(
     intro_fix: bool = True,
     weathercock_fix: bool = True,
     keep_religious_imagery: bool = False,
+    epilepsy_fix: bool = True,
     keep_jp_credits: bool = False,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
@@ -1905,7 +1938,11 @@ def build(
     imagery`` (also only meaningful alongside ``changes``) leaves Eastern
     Palace's Star-of-David floor tile exactly as JP 1.0 shipped it; by
     default ``apply_base_edits`` swaps it for the US ROM's generic tile.
-    ``keep_jp_credits`` (also only meaningful alongside ``changes``) skips
+    ``epilepsy_fix`` (also only meaningful alongside ``changes``) tones down
+    every full-screen flash effect's brightness to match a later Japanese
+    revision's photosensitive-epilepsy-safety pass; ``False`` leaves JP
+    1.0's original (much brighter) flash intensity. ``keep_jp_credits``
+    (also only meaningful alongside ``changes``) skips
     :func:`credits_bank`'s handful of JP-mistake text fixes, leaving the
     (already JP-fonted) credits text exactly as JP 1.0 shipped it. Player
     names are a 6-character field.
@@ -1946,6 +1983,7 @@ def build(
             keep_jp_credits=keep_jp_credits,
             weathercock_fix=weathercock_fix,
             keep_religious_imagery=keep_religious_imagery,
+            epilepsy_fix=epilepsy_fix,
         )
         if intro_fix:
             apply_intro_fix(english)

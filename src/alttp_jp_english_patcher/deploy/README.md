@@ -65,6 +65,18 @@ replaced it with a generic tile. By default this build swaps in the US ROM's
 version; pass `--keep-religious-imagery` when generating to keep JP 1.0's
 original tile instead.
 
+### Flash brightness (photosensitive-epilepsy safety)
+
+JP 1.0's full-screen flash effects (Agahnim's and Vitreous's lightning
+attacks, the Ether Medallion, the title screen's attract-mode cutscene, and
+the Magic Bat's power-up flash all share one routine) boost each color
+channel by 14 (of a maximum 31) every other frame while flashing -- a very
+bright, high-contrast flicker. A later Japanese revision (matching a
+Virtual Console ROM dump) tones this down to a boost of 2, as part of a
+photosensitive-epilepsy-safety pass; this build applies that same reduction
+by default. Pass `--no-epilepsy-fix` when generating to keep JP 1.0's
+original (much brighter) flash intensity instead.
+
 ---
 
 ## Building
@@ -84,7 +96,7 @@ python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
 
 On Windows, run `binextract.py`, then `_build.bat`. `make` also works on any
 platform with `asarmon` on `PATH`. All three produce `alttp-english.sfc`; a
-correct default build has MD5 `9a4f6adda78563bcfa868297c9582fbb`.
+correct default build has MD5 `c20728fb19cfcb8a56fabd9a4051b343`.
 
 ## Binaries
 

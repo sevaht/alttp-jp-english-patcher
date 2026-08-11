@@ -229,6 +229,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "by default this patcher swaps it for the US ROM's generic tile",
     )
     parser.add_argument(
+        "--no-epilepsy-fix",
+        action="store_true",
+        help="keep JP 1.0's original (much brighter) full-screen flash "
+        "effects (Agahnim's and Vitreous's lightning, the Ether Medallion, "
+        "the title screen's attract-mode cutscene, the Magic Bat); by "
+        "default this patcher tones down the flash brightness to match a "
+        "later Japanese revision's photosensitive-epilepsy-safety pass",
+    )
+    parser.add_argument(
         "--keep-jp-credits",
         action="store_true",
         help="leave the (JP-fonted) credits text exactly as JP 1.0 shipped "
@@ -291,6 +300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         intro_fix=not args.no_intro_fix,
         weathercock_fix=not args.no_weathercock_fix,
         keep_religious_imagery=args.keep_religious_imagery,
+        epilepsy_fix=not args.no_epilepsy_fix,
         keep_jp_credits=args.keep_jp_credits,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,
