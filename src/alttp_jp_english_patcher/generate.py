@@ -42,6 +42,7 @@ from .snes_assembly_parser import (
     dbr_trampolines,
     free_space,
     incbin_line,
+    instruction,
     instructions,
     note,
     notes,
@@ -926,6 +927,7 @@ def file_select(
     changes: bool,
     null_padbyte_threshold: int,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
+    us_title_screen: bool = False,
 ) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry. Pulled
     whole by recursion from the entry points; a few come from JP for the
@@ -933,6 +935,14 @@ def file_select(
     their US address + $200000 (stable, recognisable addresses); the JP
     restorations -- too big for their US slots -- plus the IRQ handler and save
     migrator pack into the free bottom of the bank, all gaps labelled NULL_.
+
+    ``IntroLogoTilemap`` is one of the entry points despite belonging to the
+    title screen, not file-select: it is module 0's slot in the per-module
+    tilemap-rebuild table this bank's other tilemap entries (``FileSelect
+    Tilemap`` and siblings) belong to, so something has to fill it regardless.
+    JP by default (the title screen stays JP-native); with
+    ``us_title_screen``, the US version instead, matching the US logo/sword
+    art :func:`title_screen_graphics` repoints ``GFX_40``/``GFX_41`` at.
     """
     us, jp = sources.us, sources.jp
     # The entry points -- every symbol un-relocated code reaches this subsystem
@@ -959,8 +969,8 @@ def file_select(
             "KILLFile_FindFileIndices",
             "NameFile_EraseSave",
             "InitializeSaveFile",
-            "IntroLogoTilemap",
         }
+        | (set() if us_title_screen else {"IntroLogoTilemap"})
     )
 
     def build_irq_handler() -> Assembly:
@@ -1491,6 +1501,307 @@ def file_select_palette(*, changes: bool) -> Relocation:
     return relocation
 
 
+def title_screen(sources: Sources) -> Relocation:
+    """Bank ``$28``: the US title-screen sword animation, for
+    ``--us-title-screen``. The caller only includes this relocation (and
+    ``bank_28.asm``'s ``incsrc``) when that flag is on: unlike this module's
+    other graft banks, there is no ``changes``-style "present but inert" mode
+    to fall back to here (see :func:`title_screen_graphics` for why one
+    matters there but not here).
+
+    ``Intro_SwordStab`` (the US-only dispatch state) and everything it reaches
+    -- ``Intro_InitLogoSword``/``Intro_HandleLogoSword`` and the three
+    ``LogoSword_*`` sub-states, with their pools -- are pulled whole (by name,
+    not recursion: they are scattered non-contiguously across US bank $0C
+    among plenty of unrelated code, so a closure/concat pull would have to
+    declare every gap between them; the small, fixed list below is simpler)
+    from the US disassembly, unedited. Also pulled: bank $00's
+    ``IntroLogoPaletteFadeIn``/``IntroTitleCardPaletteFadeIn`` (US-only
+    wrappers around the shared ``PaletteFilter_RestoreAdditive``, which both
+    ROMs have) -- these two, not the shared routine itself, since they end in
+    ``RTL`` and it ends in ``RTS``: a same-bank ``JSR`` (as their one caller,
+    below, used in the original US ROM) is exactly what an ``RTS`` needs, but
+    that caller is a cross-bank ``JSL`` here, which needs (and gets, since
+    these two get relocated alongside it) an ``RTL`` partner -- calling the
+    bare ``RTS`` routine directly across banks silently leaves its pushed bank
+    byte on the stack, corrupting every return after it.
+
+    Alongside these pulls: three small hand-written replacements for
+    ``Intro_FadeLogoIn``/``Intro_PopSubtitleCard``/
+    ``Intro_TrianglesBeforeAttract`` (``resources/title_screen.asm`` -- JP's
+    own routines with the US ROM's sword-animation calls spliced back in; see
+    that file for why they are hand-written copies rather than in-place edits
+    or a US pull). Every source lands in this one relocation so their
+    cross-references (the hand-written routines call the pulled routines by
+    their bare US names) get ``EN_``-namespaced together in one pass.
+    """
+    us = sources.us
+    # Source order (pool immediately precedes its same-named routine); each
+    # entry pulls its own pool automatically if one exists under that name.
+    names = (
+        "Intro_SwordStab",
+        "Intro_InitLogoSword",
+        "Intro_HandleLogoSword",
+        "LogoSword_IdleState",
+        "LogoSword_EyeTwinkle",
+        "LogoSword_BladeShimmer",
+        # PaletteFilter_RestoreAdditive: IntroLogoPaletteFadeIn/
+        # IntroTitleCardPaletteFadeIn JSR it internally (same-bank in the
+        # original US ROM); it has to move here too, not just get JSL'd from
+        # its original bank_00 spot, since it returns with a plain RTS (a
+        # cross-bank JSL to an RTS routine leaves the pushed bank byte on the
+        # stack, corrupting every return after it).
+        "PaletteFilter_RestoreAdditive",
+        # Not IntroTitleCardPaletteFadeIn separately: it is an
+        # address-transparent (#-prefixed) sublabel sharing this block's
+        # tail (.finish), not a boundary block() stops at, so pulling
+        # IntroLogoPaletteFadeIn already carries it along.
+        "IntroLogoPaletteFadeIn",
+        # Intro_LoadAllPalettes (bank $02): despite the shared name and the
+        # shared caller (Intro_LoadAllPalettes_long, itself reached from
+        # both JP's Intro_CreateTextPointers and US's Intro_LoadTextAnd
+        # Palettes -- see title_screen()'s own module docstring on why that
+        # caller stays JP-sourced), *this* routine's own body is not shared:
+        # JP sets $0AB3=$04 (US: $05, a different PaletteLoad_OWBGMain
+        # "area"), skips $0AAC/$0ABD entirely, and never calls
+        # PaletteLoad_SpritePal0Left. Confirmed by diffing this routine's
+        # text between the disassemblies directly, after a live-CGRAM diff
+        # against the real US ROM (byte-identical VRAM, still visibly wrong
+        # colors) pointed at a palette-*load*, not palette-*data*, mismatch.
+        # Only one caller in the entire game (grepped), so wholesale
+        # replacement -- not a byte-neutral in-place edit -- is safe; see
+        # apply_base_edits's relocate_block for the JP-side redirect (a
+        # same-size swap: Intro_LoadAllPalettes_long is coincidentally
+        # exactly 4 bytes, matching a JML's own footprint, so no growth).
+        "Intro_LoadAllPalettes",
+        # AnimateSceneSprite_DrawCopyright (bank $0C): draws the "(c)1991
+        # Nintendo" copyright line as 10 fixed OAM tiles from a `.groups`
+        # pool. US's own copy is a *longer* pool (13 groups, count $0D vs
+        # JP's $0A) reading "(c)1991,1992 Nintendo" -- an extra sheet tile
+        # ($68, a comma) plus 2 reused digit tiles. Its caller
+        # (AnimateSceneSprite_Copyright) is reached through a tail-jump
+        # chain (JumpTableLocal computes same-bank-only targets by
+        # construction -- it pops and reuses its own caller's return
+        # address, so the bank byte can never change), so it cannot move
+        # to this bank itself; only the callee moves, hooked with a
+        # landing pad back in bank $0C's own free ROM (see
+        # apply_base_edits/_wire_hooks). Pulled here (not the caller) so
+        # apply_base_edits can hook it the normal way.
+        "AnimateSceneSprite_DrawCopyright",
+        # AnimateSceneSprite_AddObjectsToOAMBuffer: DrawCopyright's own JSR
+        # target (same-bank in the original, self-contained -- no JSR/JSL
+        # of its own, confirmed by reading its full body). Moving
+        # DrawCopyright to this bank without moving this one too would
+        # leave DrawCopyright's internal JSR unable to reach it (still
+        # bank $0C). Its other 3 same-bank callers (AnimateSceneSprite_
+        # Triangle/TitleCard/Sparkle, none touched by this feature) also
+        # get a landing pad automatically -- one pad serves all of them,
+        # since they all JSR the same address. Pulling it here (alongside
+        # its one in-relocation caller) means DrawCopyright's own internal
+        # reference to it gets EN_-namespaced too, resolving straight to
+        # the bank-$28 copy instead of round-tripping through the bank-$0C
+        # landing pad meant for the *other* 3 (still-external) callers.
+        "AnimateSceneSprite_AddObjectsToOAMBuffer",
+    )
+    # Intro_InitLogoSword has no RTS/RTL of its own: it falls straight through
+    # into Intro_HandleLogoSword (both share the "pool Intro_HandleLogoSword"
+    # .char/.position_x/.position_y tables, defined once, ahead of
+    # InitLogoSword, in the source). Pulling per-name in `names` order would
+    # place that pool between the two instead -- its data bytes would run
+    # right into InitLogoSword's fallthrough as bogus instructions -- so its
+    # one pool pull is hoisted ahead of the whole loop instead.
+    sword_lines: list[Line] = [
+        *us.pool("Intro_HandleLogoSword", comments=False).lines
+    ]
+    for name in names:
+        if name == "AnimateSceneSprite_DrawCopyright":
+            # Combined (not appended straight to sword_lines like the
+            # other names below): its pool and body both need renaming
+            # together before namespacing, see the comment block below.
+            piece = Assembly(
+                [
+                    *us.pool(name, comments=False).lines,
+                    *us.block(name, comments=False).lines,
+                ]
+            )
+            # Its own internal call also needs to become a JSL: once
+            # AddObjectsToOAMBuffer moves to this bank too, the reference
+            # resolves to the (now same-bank) EN_ copy, which ends in RTL
+            # (see below) to satisfy its *other*, still-external, landing-
+            # pad-mediated callers -- a same-bank JSR/RTS pair would pop
+            # one byte short of what that RTL pushes. Growing JSR (3
+            # bytes) to JSL (4) is safe here (unlike a base-bank edit):
+            # this whole piece gets freshly re-rendered at its own org, so
+            # every line after it just shifts to match its new size.
+            index = piece.find("JSR AnimateSceneSprite_AddObjectsToOAMBuffer")
+            piece.lines[index] = instruction(
+                "JSL AnimateSceneSprite_AddObjectsToOAMBuffer"
+            )
+            # DBR fix: this routine reads its .groups pool through direct-
+            # page-indirect addressing (LDA.b ($08),Y), which resolves the
+            # pool's bank from the *data* bank register (DBR), not the
+            # code's own (program) bank -- moving code with JML/JSL never
+            # touches DBR, so it stays whatever the pre-existing caller
+            # chain set it to (bank $0C -- coincidentally correct for the
+            # original, unmoved routine, since it lived there too). Found
+            # by direct emulator inspection: cpu.dbr read $0C at the
+            # indirect-read instruction, while $08/$09 correctly pointed
+            # at .groups' real, bank-$28 address -- the pool pointer was
+            # right, the bank DBR supplied for it was not, so every read
+            # landed on unrelated bank-$0C bytes instead. A
+            # dbr_trampolines() entry stub (PHB/PHK/PLB, i.e. save the
+            # caller's DBR then set DBR = this bank) fixes it for this
+            # whole call -- DBR then stays $28 through the subsequent JSL
+            # to AddObjectsToOAMBuffer too, since JSL doesn't touch it
+            # either. AddObjectsToOAMBuffer's own generic landing pad
+            # deliberately does NOT get this treatment: its other 3
+            # external callers (Triangle/TitleCard/Sparkle) have their
+            # *own* pools still in bank $0C, so forcing DBR=$28 there
+            # would break *their* reads instead. The pool (not just the
+            # routine) has to be renamed alongside it -- dbr_trampolines'
+            # own stub claims the bare "AnimateSceneSprite_DrawCopyright"
+            # name, which would otherwise collide with the pool directive
+            # still using it too.
+            piece.suffix(["AnimateSceneSprite_DrawCopyright"], "_body")
+            piece.return_long(restore_bank=True)
+            sword_lines += dbr_trampolines(
+                ["AnimateSceneSprite_DrawCopyright"]
+            ).lines
+            sword_lines += piece.lines
+            continue
+        if name in us.pool_names and name != "Intro_HandleLogoSword":
+            sword_lines += us.pool(name, comments=False).lines
+        block = us.block(name, comments=False)
+        if name == "AnimateSceneSprite_AddObjectsToOAMBuffer":
+            # Hooked with a landing pad (its same-bank-$0C callers stay
+            # behind) -- a cross-bank JSL needs an RTL partner, not the
+            # JSR-only RTS this routine ends in.
+            block.return_long()
+        sword_lines += block.lines
+    hand = Assembly.from_content(
+        _resource_lines("title_screen.asm")
+    ).ensure_anchors()
+    relocation = Relocation(
+        hooked=(
+            "AnimateSceneSprite_DrawCopyright",
+            "AnimateSceneSprite_AddObjectsToOAMBuffer",
+        ),
+        # AnimateSceneSprite_DrawCopyright is one of AddObjectsToOAMBuffer's
+        # own callers, and it moved along in this same relocation -- telling
+        # needs_landing_pad that avoids a spurious pad-vs-alias mismatch for
+        # that one internal reference (still-external callers force a pad
+        # regardless, since they're the only ones left outside `carried`).
+        carried=frozenset({"AnimateSceneSprite_DrawCopyright"}),
+        pad_region="NULL_0CFFF6",
+        pad_header=(
+            "; [ENG-TITLE] AnimateSceneSprite_DrawCopyright/"
+            "AddObjectsToOAMBuffer moved to bank $28 for the longer US"
+            " copyright text (--us-title-screen).",
+        ),
+    )
+    relocation.place(
+        Assembly([*sword_lines, *hand.lines]),
+        0x288000,
+        "US title-screen sword animation (--us-title-screen).",
+    )
+    return relocation
+
+
+def title_screen_graphics() -> Relocation:
+    """Bank ``$29``: the US title-logo BG art (``GFX_40``/``GFX_41``) and the
+    triforce+sword OBJ sheet (``GFX_7B``), for ``--us-title-screen``. Same
+    incbin-and-repoint shape as :func:`graphics`; the caller only includes
+    this relocation when the flag is on -- unlike ``graphics``'s sheets
+    (always repointed), ``_wire_hooks`` frees a hooked name from the base
+    whether or not the relocation's own pieces get built (``Relocation.
+    changes`` only controls the alias, not the free), so leaving this bank
+    out entirely is what keeps these sheets resolving to JP's own art -- via
+    their original, un-freed names -- when the flag is off.
+
+    Intro_InitializeDefaultGFX (bank $0C, shared/unedited) loads BG1's
+    character memory once, at boot, by calling ``InitializeTilesets`` with
+    ``$0AA1``=$23/``$0AA2``=$51 -- indices into ``SheetsTable_AA1`` (an
+    8-sheet row per tileset ID) and ``SheetsTable_AA2`` (a 4-sheet row that
+    overrides 4 of AA1's 8 slots when its own entry is nonzero), both bank
+    $00. Both tables' *code* is shared/byte-identical between the
+    disassemblies, but these two rows' *data* is not: AA1 row $23 reads
+    ``$00/$39/$39/$72/$40/$41/$39/$0F`` in JP, ``$16/$39/$1D/$17/$40/$41/$39/
+    $1E`` in US; AA2 row $51 (which overrides AA1 row $23's 4th slot, i.e.
+    the $72/$17 one) reads ``$72/$40/$41/$39`` in JP, ``$17/$40/$41/$39`` in
+    US (all confirmed by reading both disassemblies' own copies of the
+    tables directly -- not inferred). Since this whole patcher's base is
+    JP's bank $00, unmodified, the game loads *JP's* sheet list regardless
+    of ``us_title_screen`` -- :func:`apply_base_edits`'s two row rewrites are
+    what make it load these sheets instead (four here, plus $39 -- already
+    repointed unconditionally by :func:`graphics`, file-select's linoleum --
+    and $40/$41, the logo text). Confirmed empirically: swapping just these
+    sheets, plus both row rewrites, reproduces the real US ROM's title
+    screen VRAM content exactly (a diff of live VRAM dumps -- tilemap *and*
+    character data -- came back byte-for-byte identical). $5C/$5D (also
+    visible in a live US-ROM VRAM dump, but from
+    ``DecompressAnimatedUnderworldTiles``'s separate, hardcoded-Y intro
+    call, not this table) turned out to be unrelated to the title screen's
+    own appearance -- repointing them made no difference to any pixel, so
+    they are deliberately left JP-sourced (repointing them would have swapped
+    dungeon water/lava tile animation game-wide for no benefit).
+
+    GFX_A5 is a different case: it's the sword-blade/hilt *OBJ* sheet (the
+    others above are all BG). It's reached through SheetsTable_AA3 row $7D
+    (read by InitializeTilesets via $0AA3, set to $7D by the same
+    Intro_InitializeDefaultGFX) -- confirmed by live-tracing VRAM writes in
+    the real US ROM down to the exact tiles the sword sprite pool
+    (EN_Intro_HandleLogoSword's .char/.position_x/.position_y, pulled in
+    title_screen()) references. JP's row $7D leaves that slot's sheet ID
+    unchanged (a no-op, since JP's title screen has no sword); US's sets it
+    to sheet $32, i.e. GFX_A5 -- so apply_base_edits's row rewrite alone
+    only gets as far as loading *JP's own* GFX_A5 into VRAM, which isn't the
+    sword at all (confirmed: rendering those VRAM tiles showed an unrelated
+    diagonal lattice pattern, not a blade). Repointing GFX_A5 itself here is
+    the fix, and it is *not* fully scoped to the title screen the way the
+    sheets above are: SheetsTable_AA3 row $42 (slot 2) also references sheet
+    $32 by JP's own numbering, and $0AA3 is written from many real-gameplay
+    sites (room/area tileset loads) -- so some other, not yet identified JP
+    room whose tileset is row $42 would show the US sword-sheet content
+    instead of its own real graphic under --us-title-screen. Accepted
+    knowingly: contained to an opt-in flag, and unswapped left the intro
+    with no sword sprite at all (the original, worse problem).
+    """
+    sheets = (
+        ("GFX_16", "us_gfx_16.3bppc"),  # US title-screen intro-tileset 1/4
+        ("GFX_17", "us_gfx_17.3bppc"),  # US title-screen intro-tileset 2/4
+        ("GFX_1D", "us_gfx_1d.3bppc"),  # US title-screen intro-tileset 3/4
+        ("GFX_1E", "us_gfx_1e.3bppc"),  # US title-screen intro-tileset 4/4
+        ("GFX_40", "us_gfx_40.3bppc"),  # US title-logo BG art, sheet 1/2
+        ("GFX_41", "us_gfx_41.3bppc"),  # US title-logo BG art, sheet 2/2
+        ("GFX_7B", "us_gfx_7b.3bpp"),  # US triforce+sword OBJ sheet
+        ("GFX_A5", "us_gfx_a5.3bppc"),  # US sword-blade/hilt OBJ sheet
+    )
+    dead_notes: dict[str, tuple[str, ...]] = {
+        name: (
+            f"; [ENG-TITLE] JP intro-tileset sheet "
+            f"${name.removeprefix('GFX_')} repointed at the US sheet",
+            f"; ({name}, usgfx.asm); only live with --us-title-screen.",
+        )
+        for name, _ in sheets
+    }
+    lines: list[Line] = []
+    for name, filename in sheets:
+        lines.append(note(f"{name}:"))
+        lines.append(
+            incbin_line(f"bin/gfx/{filename}", us_assets.asset(filename).size)
+        )
+        lines.append(note(""))
+    relocation = Relocation(
+        hooked=tuple(name for name, _ in sheets), hook_notes=dead_notes
+    )
+    relocation.place(
+        Assembly(lines[:-1]),
+        0x298000,
+        "US title-screen graphics (--us-title-screen).",
+    )
+    return relocation
+
+
 # ---------------------------------------------------------------------------
 # base-disassembly edits
 # ---------------------------------------------------------------------------
@@ -1555,6 +1866,7 @@ def apply_base_edits(
     weathercock_fix: bool = True,
     keep_religious_imagery: bool = False,
     epilepsy_fix: bool = True,
+    us_title_screen: bool = False,
 ) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
@@ -1759,6 +2071,215 @@ def apply_base_edits(
     english.rewrite_reference(
         0x0CCE8B, "CopySaveToWRAM", "UNREACHABLE_CopySaveToWRAM"
     )
+    if us_title_screen:
+        # Module00_Intro's dispatch table repointed at title_screen()'s bank
+        # $28 (four set_operand swaps, so the table's byte width -- and every
+        # anchor after it -- never changes): slots 5/6/7 (Intro_FadeLogoIn /
+        # Intro_PopSubtitleCard / Intro_TrianglesBeforeAttract) go to the
+        # hand-written replacements that splice the sword calls back in (see
+        # resources/title_screen.asm) and the new Intro_SwordStab state; slot
+        # 8 (Intro_InitializeTriforcePolyThread, a second copy of slot 2) is
+        # repurposed for the fourth new state rather than growing the table,
+        # since it is unreachable in practice -- slot 7's replacement always
+        # ends the module (switches to Module14_Attract) before the
+        # submodule counter reaches 8. The leading skip-check
+        # (CMP.b #$04 -- press Start/B once submodule >= 4) is untouched, so
+        # the US logo/sword sequence stays skippable exactly where JP 1.0's
+        # own logo is: as soon as the triforce finishes forming.
+        dispatch = "Module00_Intro"
+        for old, new in (
+            ("dl Intro_FadeLogoIn", "dl EN_TitleScreenUS_FadeLogoIn"),
+            ("dl Intro_PopSubtitleCard", "dl EN_Intro_SwordStab"),
+            (
+                "dl Intro_TrianglesBeforeAttract",
+                "dl EN_TitleScreenUS_PopSubtitleCard",
+            ),
+        ):
+            english.set_operand(_address_of_line(english, dispatch, old), new)
+        # Slot 8's own text ("dl Intro_InitializeTriforcePolyThread") is
+        # identical to slot 2's -- _address_of_line's text search would find
+        # slot 2 (still needed) first, so this one has to go by its own
+        # pristine JP address instead.
+        english.set_operand(
+            0x0CC131, "dl EN_TitleScreenUS_TrianglesBeforeAttract"
+        )
+        # SheetsTable_AA1 row $23 (bank $00, read by InitializeTilesets,
+        # called from Intro_InitializeDefaultGFX with $0AA1=$23): the code
+        # reading this table is byte-identical between the disassemblies,
+        # but this row's own data is not -- JP's reads $00/$39/$39/$72/$40/
+        # $41/$39/$0F, US's reads $16/$39/$1D/$17/$40/$41/$39/$1E (checked
+        # directly against both disassemblies' own copies of the table).
+        # Since this whole patcher's base is JP's bank $00, the game loads
+        # JP's sheet list into the title screen's BG1 tiles regardless of
+        # this flag unless the row itself is rewritten -- title_screen_
+        # graphics() repointing GFX_16/17/1D/1E to US content has nothing to
+        # do without this, since JP's own row never references them.
+        english.set_operand(
+            _address_of_line(
+                english,
+                "SheetsTable_AA1",
+                "db $00, $39, $39, $72, $40, $41, $39, $0F",
+            ),
+            "db $16, $39, $1D, $17, $40, $41, $39, $1E",
+        )
+        # SheetsTable_AA1's row-3 slot ($72 above) is itself only a fallback:
+        # InitializeTilesets prefers SheetsTable_AA2's row $51 ($0AA2's
+        # value) for that slot when it is nonzero, and it is ($72 in JP) --
+        # so the row-$23 rewrite alone left this one slot still loading JP's
+        # sheet. Same story here: the code is shared, this row's data is
+        # not (JP $72, US $17); the other 3 bytes of the row are already
+        # identical between the disassemblies, so only the first is rewritten.
+        english.set_operand(
+            _address_of_line(
+                english, "SheetsTable_AA2", "db $72, $40, $41, $39"
+            ),
+            "db $17, $40, $41, $39",
+        )
+        # SheetsTable_AA3 row $7D (read by InitializeTilesets via $0AA3,
+        # which Intro_InitializeDefaultGFX sets to $7D in both
+        # disassemblies): this row feeds LoadSpriteGraphics/
+        # Decompress_sprite_arbitrary, i.e. OBJ (sprite) tiles rather than
+        # BG ones -- confirmed by live-tracing VRAM writes in the real US
+        # ROM, which land exactly on this row's first slot's sheet and
+        # exactly on the sword-blade OBJ tiles (VRAM word $5000+, name
+        # table 1 per this intro's OBSEL=$02) that were rendering blank in
+        # our build. JP's row leaves that slot unchanged ($00, inheriting
+        # whatever the previous caller left in $7EC2FC -- nothing sword-
+        # shaped, since JP's title screen has no sword); US's row loads
+        # sheet $32 there explicitly. The other 3 bytes already match.
+        english.set_operand(
+            _address_of_line(
+                english, "SheetsTable_AA3", "db $00, $00, $00, $08"
+            ),
+            "db $32, $00, $00, $08",
+        )
+        # Intro_LoadAllPalettes_long (bank $02) redirected to the pulled US
+        # Intro_LoadAllPalettes (see title_screen()'s comment on that pull):
+        # JP's own version sets a different PaletteLoad_OWBGMain "area"
+        # ($0AB3=$04, not US's $05) and skips a PaletteLoad_SpritePal0Left
+        # call US has, both feeding the same live-CGRAM-diff-confirmed
+        # colors the sword-stab scene reveal uses. The wrapper being
+        # replaced is exactly 4 bytes (JSR Intro_LoadAllPalettes / RTL),
+        # matching a JML's own footprint, so this is a same-size swap: no
+        # orphan bytes, nothing after it shifts.
+        english.relocate_block(
+            0x02802A,
+            "EN_TitleScreenUS_LoadAllPalettes",
+            resume=0x02802E,
+            comment=(
+                "; [ENG-TITLE] Intro_LoadAllPalettes_long -> the pulled US "
+                "Intro_LoadAllPalettes (bank $28, title_screen.asm);",
+                "; JP's own version loads different colors for the "
+                "sword-stab scene reveal. --us-title-screen only.",
+            ),
+        )
+        # relocate_block's replaced range runs from `address` up to (not
+        # including) the first *anchored* line at or past `resume` -- the
+        # unanchored "AnimatedTileSheets:" label line, which sits between
+        # Intro_LoadAllPalettes_long's body and its own first data line
+        # ($02802E), has no address of its own and gets swept up and
+        # dropped along with it. AnimatedTileSheets>0 bytes themselves are
+        # untouched (they start exactly at resume); only the label needs
+        # restoring.
+        english.insert_before(0x02802E, ["AnimatedTileSheets:"])
+        # PaletteData (bank $1B): the pulled Intro_LoadAllPalettes reaches
+        # PaletteLoad_OWBG1/OWBG2/OWBGMain/HUD by plain (unprefixed) name, so
+        # those calls resolve against JP's own bank $1B, unmodified -- same
+        # trap as SheetsTable_AA1/AA2 above, but for palette *data* this
+        # time. PaletteLoad_OWBG1/OWBGMain/HUD's own code is byte-identical
+        # between the disassemblies (confirmed directly), but with
+        # $0AB1=$05/$0AB4=$03 (the values the pulled routine sets -- also
+        # shared by JP's own dead copy of Intro_LoadAllPalettes, so this
+        # slot is intro-only, never touched by real overworld-area palette
+        # loads), the "owaux"/OW-area sub-tables it indexes into hold
+        # genuinely different colors in JP's disassembly (found by tracing
+        # every PaletteLoadMultiple source pointer live during this exact
+        # call, then diffing JP's vs US's raw ROM bytes at each one -- most
+        # matched, nine rows didn't). JP's rows here are otherwise-unused
+        # filler ($7FFF/$0000 repeats or a stray non-color byte), not real
+        # JP-game colors, so rewriting them can't affect anything else.
+        for old, new in (
+            (
+                "dw  $4DAD,  $4DAD,  $4DAD,  $4DAD,  $4DAD,  $4DAD,  $4DAD",
+                "dw  $377F,  $54E9,  $165F,  $1016,  $2C43,  $6B18,  $61EF",
+            ),
+            (
+                "dw  $14A5,  $0000,  $0000,  $0000,  $0000,  $0000,  $0000",
+                "dw  $190A,  $3549,  $45EC,  $6E50,  $258D,  $3A32,  $5F3A",
+            ),
+        ):
+            english.set_operand(
+                _address_of_line(english, "PaletteData", old), new
+            )
+        # $7FFF-repeat rows: three occurrences of the identical text, so
+        # each needs its own address-anchored needle to disambiguate.
+        for anchor, new in (
+            (
+                0x1BE826,
+                "dw  $5D8C,  $558A,  $76B3,  $7AF4,  $0D23,  $11C4,  $2287",
+            ),
+            (
+                0x1BE834,
+                "dw  $4908,  $558A,  $76B3,  $7AF4,  $2CA3,  $3584,  $3E09",
+            ),
+            (
+                0x1BE842,
+                "dw  $6A0F,  $6E50,  $6E71,  $76B3,  $558A,  $69EE,  $7B17",
+            ),
+            (
+                0x1BE906,
+                "dw  $7FFF,  $3DEF,  $14A5,  $14A5,  $0000,  $6318,  $4E73",
+            ),
+        ):
+            english.set_operand(
+                _address_of_line(
+                    english,
+                    "PaletteData",
+                    f"#_{anchor:06X}: dw  $7FFF,  $7FFF,  $7FFF,  $7FFF,  "
+                    "$7FFF,  $7FFF,  $7FFF",
+                ),
+                new,
+            )
+        # $0000-repeat row: two occurrences, same disambiguation need.
+        english.set_operand(
+            _address_of_line(
+                english,
+                "PaletteData",
+                "#_1BE850: dw  $0000,  $0000,  $0000,  $0000,  $0000,  "
+                "$0000,  $0000",
+            ),
+            "dw  $190A,  $3549,  $45EC,  $6E50,  $258D,  $3A32,  $5F3A",
+        )
+        english.set_operand(
+            _address_of_line(
+                english,
+                "PaletteData",
+                "#_1BE85E: dw  $0000,  $0000,  $0000,  $0000,  $0000,  "
+                "$0000,  $0000",
+            ),
+            "dw  $1084,  $1908,  $258C,  $4273,  $52F7,  $188B,  $1532",
+        )
+        english.set_operand(
+            _address_of_line(
+                english,
+                "PaletteData",
+                "dw  $7FFF,  $005C,  $0000,  $015C,  $021F,  $02BF,  $033F",
+            ),
+            "dw  $044E,  $0009,  $0CFC,  $63DF,  $4E73,  $323F,  $0C75",
+        )
+        # InitializeSceneSprite_Copyright (bank $0C): sets the copyright
+        # line's starting X position. US starts 12px further left ($4C,
+        # not JP's $58) to keep the longer "1991,1992" text centered --
+        # AnimateSceneSprite_DrawCopyright (the routine that actually draws
+        # it) is hooked to the pulled US version in title_screen(); this
+        # routine only sets up the position/counters, so a byte-neutral
+        # constant swap is enough, no relocation needed.
+        english.set_operand(
+            _address_of_line(
+                english, "InitializeSceneSprite_Copyright", "LDA.b #$58"
+            ),
+            "LDA.b #$4C",
+        )
 
 
 def apply_intro_fix(english: Rom) -> None:
@@ -1831,14 +2352,22 @@ _MAIN_ANCHOR = 'incsrc "bank_1F.asm"'
 _MAIN_MARKER = 'incsrc "bank_20.asm"'
 # Inserted right after the last base-bank include: the graft-bank includes,
 # then the 2 MB padding + SNES header size byte the expansion needs (so the
-# checksum is a plain byte-sum every emulator agrees on).
-_MAIN_BLOCK = (
+# checksum is a plain byte-sum every emulator agrees on). bank_28/bank_29
+# (the --us-title-screen sword code/graphics) are spliced in conditionally by
+# patch_main_asm -- every other graft bank is unconditional.
+_MAIN_BLOCK_HEAD = (
     "",
     'incsrc "bank_20.asm"',  # our VWF font + relocated TransferFontToVRAM
     'incsrc "bank_22.asm"',  # message data (main table)
     'incsrc "bank_23.asm"',  # message data (overflow)
     'incsrc "bank_26.asm"',  # US menu/HUD + file-select font & bg graphics
     'incsrc "bank_27.asm"',  # file-select US palette overlay + palette data
+)
+_MAIN_BLOCK_US_TITLE_SCREEN = (
+    'incsrc "bank_28.asm"',  # --us-title-screen: sword animation
+    'incsrc "bank_29.asm"',  # --us-title-screen: logo/triforce/sword gfx
+)
+_MAIN_BLOCK_TAIL = (
     'incsrc "bank_2C.asm"',  # file-select / copy / erase / name-entry
     'incsrc "bank_2D.asm"',  # item menu
     'incsrc "bank_2E.asm"',  # text engine (+ override stubs) and credits
@@ -1855,8 +2384,9 @@ _MAIN_BLOCK = (
     " everyone agrees on, so",
     "; --fix-checksum writes a value snes9x accepts. The gaps between the"
     " graft banks ($21, $24-$25,",
-    "; $28-$2B, $2F-$3F) are unused ($00 fill) -- valid LoROM space in a 2 MB"
-    " ROM, free for future use.",
+    "; $28-$2B (unless --us-title-screen), $2F-$3F) are unused ($00 fill) --"
+    " valid LoROM space in a",
+    "; 2 MB ROM, free for future use.",
     "org $3FFFFF",
     "db $FF",
     "",
@@ -1869,7 +2399,7 @@ _MAIN_BLOCK = (
 )
 
 
-def patch_main_asm(english: Rom) -> None:
+def patch_main_asm(english: Rom, *, us_title_screen: bool = False) -> None:
     """Wire the graft-bank includes + 2 MB padding into the entry ``main.asm``.
 
     Idempotent and located by the ``incsrc "bank_1F.asm"`` anchor, not a line
@@ -1895,8 +2425,13 @@ def patch_main_asm(english: Rom) -> None:
     if anchor is None:
         msg = f"main.asm: anchor {_MAIN_ANCHOR!r} not found"
         raise ValueError(msg)
+    block = (
+        *_MAIN_BLOCK_HEAD,
+        *(_MAIN_BLOCK_US_TITLE_SCREEN if us_title_screen else ()),
+        *_MAIN_BLOCK_TAIL,
+    )
     main.lines[anchor + 1 : anchor + 1] = [
-        Line.from_line(text) for text in _MAIN_BLOCK
+        Line.from_line(text) for text in block
     ]
     main.resize()
 
@@ -1911,6 +2446,7 @@ def build(
     keep_religious_imagery: bool = False,
     epilepsy_fix: bool = True,
     keep_jp_credits: bool = False,
+    us_title_screen: bool = False,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Rom:
@@ -1945,8 +2481,14 @@ def build(
     (also only meaningful alongside ``changes``) skips
     :func:`credits_bank`'s handful of JP-mistake text fixes, leaving the
     (already JP-fonted) credits text exactly as JP 1.0 shipped it. Player
-    names are a 6-character field.
+    names are a 6-character field. ``us_title_screen`` (also only meaningful
+    alongside ``changes``) swaps the (default JP-native) title-screen logo
+    for the US ROM's logo + animated sword, keeping JP 1.0's own
+    press-to-skip timing (skippable as soon as the triforce forms, not
+    gated behind the sword animation like the real US ROM) -- see
+    :func:`title_screen`/:func:`title_screen_graphics`.
     """
+    title_screen_on = us_title_screen and changes
     sources = Sources(
         us=Rom.load(usdasm / "main.asm"), jp=Rom.load(jpdasm / "main.asm")
     )
@@ -1967,10 +2509,13 @@ def build(
             changes=changes,
             null_padbyte_threshold=null_padbyte_threshold,
             nop_padbyte_threshold=nop_padbyte_threshold,
+            us_title_screen=title_screen_on,
         ),
         graphics(changes=changes),
         file_select_palette(changes=changes),
     ]
+    if title_screen_on:
+        relocations += [title_screen(sources), title_screen_graphics()]
     # Wire hooks first: it classifies each hook (alias vs pad) from the
     # pristine JP's callers and records the alias set the pieces then emit.
     if changes:
@@ -1984,10 +2529,11 @@ def build(
             weathercock_fix=weathercock_fix,
             keep_religious_imagery=keep_religious_imagery,
             epilepsy_fix=epilepsy_fix,
+            us_title_screen=title_screen_on,
         )
         if intro_fix:
             apply_intro_fix(english)
-    patch_main_asm(english)
+    patch_main_asm(english, us_title_screen=title_screen_on)
     return english
 
 
