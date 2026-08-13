@@ -40,7 +40,9 @@ from .generate import (
 )
 from .gitignore import patch as patch_gitignore
 from .graft import bank_header
+from .jp_credits_font_asset import render_binextract_jp_credits_font
 from .us_assets import render_binextract_us
+from .us_credits_font_asset import render_binextract_us_credits_font
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -60,9 +62,12 @@ _SOURCES = {
 }
 
 # bundled deploy artifacts -> written verbatim into the target fork.
-# binextract-us.py is NOT here: it is generated (see _deploy_tooling), not a
-# static file, so its (offset, size, md5) data can never drift from what
-# generate.py's incbin sizing assumes -- both read us_assets.US_ASSETS.
+# binextract-us.py / binextract-jp-credits-font.py /
+# binextract-us-credits-font.py are NOT here: they are generated (see
+# _deploy_tooling), not static files, so their asset data can never drift
+# from what generate.py's incbin sizing assumes -- each reads its own
+# module's constants (us_assets.US_ASSETS, jp_credits_font_asset,
+# us_credits_font_asset).
 #
 # Makefile / _build.bat ARE here even though jpdasm ships its own: those
 # pristine copies build alttp_reasm.sfc with the checksum fix off (they
@@ -138,8 +143,16 @@ def _deploy_tooling(target: Path) -> None:
     for name in _DEPLOY_FILES:
         (target / name).write_bytes(root.joinpath(name).read_bytes())
     (target / "binextract-us.py").write_text(render_binextract_us())
+    (target / "binextract-jp-credits-font.py").write_text(
+        render_binextract_jp_credits_font()
+    )
+    (target / "binextract-us-credits-font.py").write_text(
+        render_binextract_us_credits_font()
+    )
     (target / "_build.sh").chmod(0o755)
     (target / "binextract.py").chmod(0o755)
+    (target / "binextract-jp-credits-font.py").chmod(0o755)
+    (target / "binextract-us-credits-font.py").chmod(0o755)
 
 
 def _place_roms(target: Path, args: argparse.Namespace) -> None:
@@ -247,6 +260,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "attribution",
     )
     parser.add_argument(
+        "--credits-font",
+        choices=("jp", "us"),
+        default="jp",
+        help="which font credits render with: 'jp' (default) is JP 1.0's "
+        "own bolder font, computed offline from the JP ROM; 'us' pulls the "
+        "same character set from the US dialogue font instead, matching "
+        "the rest of the (US-fonted) game's look",
+    )
+    parser.add_argument(
         "--us-title-screen",
         action="store_true",
         help="swap the (default JP-native) title screen for the US ROM's "
@@ -310,6 +332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         keep_religious_imagery=args.keep_religious_imagery,
         epilepsy_fix=not args.no_epilepsy_fix,
         keep_jp_credits=args.keep_jp_credits,
+        credits_font=args.credits_font,
         us_title_screen=args.us_title_screen,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,

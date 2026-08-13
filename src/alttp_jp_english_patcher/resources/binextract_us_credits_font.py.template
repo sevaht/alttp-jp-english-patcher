@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""
+binextract-us-credits-font.py -- build a US-styled alternate for the credits'
+font, in the exact same tile-slot layout as jp_credits_font.2bpp (see
+binextract-jp-credits-font.py), from your own US ROM. Nothing copyrighted is
+committed to this repo; the `binextract.py` stub runs this (alongside
+binextract-jp.py, binextract-us.py, binextract-jp-credits-font.py) to produce
+`bin/gfx/us_credits_font.2bpp`.
+
+    python3 binextract-us-credits-font.py              # uses ./alttp-us.sfc
+    python3 binextract-us-credits-font.py --us-rom US.sfc
+
+You need the US ROM (md5 $us_rom_md5), by default named `alttp-us.sfc` in
+this directory.
+
+Every character JP 1.0's credits actually display (see Credits_CharacterToTile,
+bank_0E) is looked up by its US dialogue-font (TheFont) tile instead of JP's
+own bold glyph, then written to the SAME tile slot jp_credits_font.2bpp uses
+for that same character -- so credits can load either file interchangeably
+(--credits-font jp/us) with no other code changes: same slot numbers, same
+Credits_CharacterToTile table, same CreditsTextLine data, just different
+pixel data at each slot. Tile slots this build never references (no JP
+credits text uses them) are left blank. NO emulator is used -- this is a
+plain table-driven byte copy from the US ROM's own font asset. Output is
+verified against a known md5; the script stops loudly if it doesn't match.
+
+GENERATED from alttp_jp_english_patcher/us_credits_font_asset.py -- do not
+hand-edit; change that module and redeploy to regenerate this file.
+"""
+import argparse, hashlib, os, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(HERE, "bin", "gfx")
+
+US_ROM_MD5 = $us_rom_md5
+OUTPUT_MD5 = $output_md5
+
+# US TheFont lives at this ROM offset (see us_assets.py's "us_font.2bpp"
+# slice) -- read directly here rather than depending on that file already
+# having been extracted, since extraction order between scripts isn't
+# guaranteed.
+US_FONT_OFFSET = $us_font_offset
+US_FONT_SIZE = $us_font_size
+
+# (JP credits tile slot -> source US TheFont tile) for every character JP's
+# credits actually reference (Credits_CharacterToTile, bank_0E); a slot not
+# listed here is left blank (0x00) -- either JP's own blank fill tile, or a
+# character (the "*BULLET*" green list-marker) with no US dialogue-font
+# equivalent.
+TILE_MAP = $tile_map
+
+
+def md5(b):
+    return hashlib.md5(b).hexdigest()
+
+
+def die(msg):
+    print("ERROR:", msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def check_rom(path):
+    if not path or not os.path.isfile(path):
+        die(f"US ROM not found: {path!r}")
+    got = md5(open(path, "rb").read())
+    if got != US_ROM_MD5:
+        die(
+            f"US ROM md5 mismatch: got {got}, expected {US_ROM_MD5}\n"
+            f"       (this must be the US release)"
+        )
+    print(f"  US ROM ok ({got})")
+
+
+def build_output(us_rom_bytes):
+    font = us_rom_bytes[US_FONT_OFFSET : US_FONT_OFFSET + US_FONT_SIZE]
+    out = bytearray(8192)
+    for jp_slot, us_tile in TILE_MAP.items():
+        src = us_tile * 16
+        dst = jp_slot * 16
+        out[dst : dst + 16] = font[src : src + 16]
+    return bytes(out)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="build the US-styled credits font alternate from your"
+        " own US ROM"
+    )
+    ap.add_argument(
+        "--us-rom",
+        default=os.path.join(HERE, "alttp-us.sfc"),
+        help="US ROM (default: ./alttp-us.sfc)",
+    )
+    a = ap.parse_args()
+
+    a.us_rom = os.path.abspath(a.us_rom)
+    print("Validating ROM:")
+    check_rom(a.us_rom)
+    os.makedirs(OUT, exist_ok=True)
+
+    print("Building US-styled credits font:")
+    us_rom_bytes = open(a.us_rom, "rb").read()
+    data = build_output(us_rom_bytes)
+    got = md5(data)
+    out = os.path.join(OUT, "us_credits_font.2bpp")
+    open(out, "wb").write(data)
+    ok = got == OUTPUT_MD5
+    status = "OK" if ok else "MD5 MISMATCH"
+    print(f"  bin/gfx/us_credits_font.2bpp {got}  [{status}]")
+    if not ok:
+        die(
+            "output did not match the expected md5.\n"
+            "       Double-check that your US ROM matches the md5 at the"
+            " top of this script."
+        )
+    print("\nUS-styled credits font built and verified.")
+
+
+if __name__ == "__main__":
+    main()

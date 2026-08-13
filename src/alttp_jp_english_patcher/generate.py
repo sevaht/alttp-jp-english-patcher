@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
-from . import us_assets
+from . import jp_credits_font_asset, us_assets, us_credits_font_asset
 from .graft import Relocation, bank_header, mirror, require_start, substitute
 from .snes_assembly_parser import (
     DEFAULT_ROW_WIDTH,
@@ -464,6 +464,84 @@ def font_upload(sources: Sources, *, changes: bool) -> Relocation:
     )
     relocation.place_mirror(
         routine, "bank-$00 TransferFontToVRAM (mirror of JP $00E596)."
+    )
+    return relocation
+
+
+def credits_font_upload(
+    sources: Sources, *, changes: bool, credits_font: str = "jp"
+) -> Relocation:
+    """Bank ``$20`` (free space): a second, independent ``TransferFontToVRAM``
+    copy, repointed to upload the credits' font from a precomputed flat
+    resource instead of JP's runtime-decompressed ``$7E2000`` VWF buffer.
+
+    ``credits_font`` picks which resource: ``"jp"`` (default) is
+    ``jp_credits_font.2bpp``, JP 1.0's own bold font, decompressed *offline*
+    (``binextract-jp-credits-font.py``, from the raw JP ROM bytes, no
+    emulator) into a plain flat 2bpp sheet. ``"us"`` is
+    ``us_credits_font.2bpp``, the same
+    tile-slot layout with each character's pixel data instead pulled from
+    the US dialogue font (``binextract-us-credits-font.py``, see
+    :mod:`us_credits_font_asset`) -- letting credits look like the rest of
+    the (US-fonted) game instead of standing out. Either way this is the
+    same flat-upload shape :func:`font_upload` already uses for the English
+    dialogue font, just a different source and a different pair of callers
+    (credits' own font-load sites, wired in ``apply_base_edits``). This is
+    why credits needs none of
+    ``BuildSomeTextMasks``/``DecompressFontGFX``/``TransferFontToVRAM``'s JP
+    originals at runtime at all: the decompression/lookup already happened
+    once, ahead of time, and its *output* is what gets `incbin`'d here.
+    """
+    filename, size, style_note = (
+        (
+            "jp_credits_font.2bpp",
+            jp_credits_font_asset.SIZE,
+            "JP 1.0's own bold font",
+        )
+        if credits_font == "jp"
+        else (
+            "us_credits_font.2bpp",
+            us_credits_font_asset.SIZE,
+            "the US dialogue font",
+        )
+    )
+    jp = sources.jp
+    routine = jp.extract(["TransferFontToVRAM"], recursive=True)
+    routine.suffix(["TransferFontToVRAM"], "_Credits")
+    if changes:
+        # Same 2 byte-width-preserving operand swaps as font_upload()'s
+        # copy; the original word-count load already matches this
+        # resource's own 8192-byte size exactly (both are a flat
+        # 4096-word/8192-byte transfer), so it needs no edit.
+        routine.replace("LDA.b #$7E", "LDA.b #CreditsFont>>16", count=1)
+        routine.replace("LDA.w #$7E2000", "LDA.w #CreditsFont", count=1)
+        routine.lines.insert(
+            0,
+            note(
+                f"; [ENG-CREDITS-FONT] Uploads the credits' font"
+                f" ({filename}, {style_note}) to VRAM $E000 -- decompressed"
+                " offline, so no runtime decompression is needed."
+            ),
+        )
+    relocation = Relocation(changes=changes)
+    relocation.place(
+        Assembly(
+            [
+                note("CreditsFont:"),
+                incbin_line(f"bin/gfx/{filename}", size),
+                note("CreditsFont_end:"),
+            ]
+        ),
+        0x209000,
+        f"The credits' font ({filename}, {style_note}), computed offline.",
+        namespace=False,
+    )
+    relocation.place(
+        routine,
+        0x20B000,
+        "Credits' own TransferFontToVRAM copy (mirror-independent -- a"
+        " second, separately-sourced upload routine, not JP $00E596's own"
+        " mirror slot).",
     )
     return relocation
 
@@ -1859,6 +1937,15 @@ def _address_of_line(english: Rom, name: str, needle: str) -> int:
     return address
 
 
+def _address_of_pool_line(english: Rom, name: str, needle: str) -> int:
+    """The live address of the ``needle``-matching line in pool ``name``."""
+    address = english.pool(name).line(needle).address
+    if address is None:
+        msg = f"{name}: {needle!r} is not a live-anchored pool line"
+        raise ValueError(msg)
+    return address
+
+
 def apply_base_edits(
     english: Rom,
     *,
@@ -1922,18 +2009,14 @@ def apply_base_edits(
         # against the same sheets decompressed from an EU ROM.
         english.set_operand(
             _address_of_line(
-                english,
-                "GFX_5A",
-                "db $3C, $10, $14, $00, $67, $00, $A7, $03",
+                english, "GFX_5A", "db $3C, $10, $14, $00, $67, $00, $A7, $03"
             ),
             "db $3C, $10, $14, $00, $66, $00, $A7, $02",
             comment="[ENG-GFX] EU-matching weathercock fix",
         )
         english.set_operand(
             _address_of_line(
-                english,
-                "GFX_5A",
-                "db $00, $34, $00, $2C, $08, $7F, $18, $BF",
+                english, "GFX_5A", "db $00, $34, $00, $2C, $08, $7F, $18, $BF"
             ),
             "db $00, $34, $00, $2C, $08, $7E, $18, $BF",
             comment="[ENG-GFX] EU-matching weathercock fix",
@@ -1945,9 +2028,7 @@ def apply_base_edits(
         )
         english.set_operand(
             _address_of_line(
-                english,
-                "GFX_5B",
-                "db $1C, $08, $1C, $00, $77, $00, $A7, $03",
+                english, "GFX_5B", "db $1C, $08, $1C, $00, $77, $00, $A7, $03"
             ),
             "db $1C, $08, $1C, $00, $76, $00, $A7, $02",
             comment="[ENG-GFX] EU-matching weathercock fix",
@@ -2015,42 +2096,61 @@ def apply_base_edits(
             "ADC.w #$0800",
             comment="[ENG-GFX] toned-down flash brightness (later JP rev)",
         )
-    # Credits keeps its own JP-native font (see credits_bank), but its
-    # scene-load and staff-scroll init each reload a font via
-    # DecompressFontGFX (bank_0E) / TransferFontToVRAM (bank_00) -- the same
-    # two routines the text engine/font upload hook for the English VWF
-    # font. Their English forms (a no-op, and a TheFont upload) don't cover
-    # JP's credits-only glyph tiles, so these two credits call sites need
-    # the preserved JP originals; every other caller of the pair (the
-    # game's normal font loads) is unaffected and keeps the English hooks.
-    english.rename("UNREACHABLE_DecompressFontGFX", "JP_DecompressFontGFX")
-    english.rename("UNREACHABLE_TransferFontToVRAM", "JP_TransferFontToVRAM")
+    # Credits keeps its own JP-native (bolder) font, but no longer via JP's
+    # own runtime decompression pipeline: jp_credits_font.2bpp
+    # (credits_font_upload, bank $20) is that same font pre-decompressed
+    # *offline* (binextract-jp-credits-font.py, straight from the raw JP
+    # ROM bytes -- no emulator), so credits' scene-load and staff-scroll
+    # init only need to point their TransferFontToVRAM call at that
+    # flat resource instead
+    # of JP's own $7E2000-sourced copy -- no DecompressFontGFX call, no
+    # BuildSomeTextMasks, no TEXTDECOMP WRAM table, at all, ever. Every
+    # other DecompressFontGFX/TransferFontToVRAM caller (the game's normal
+    # font loads) is unaffected and keeps the usual English hooks; these two
+    # DecompressFontGFX calls are simply left un-redirected, falling through
+    # to that same no-op hook.
     font_load_callers = (
         "Credits_LoadOverworldScene_PrepGFX",
         "Credits_InitializeTheActualCredits",
     )
     for caller in font_load_callers:
         english.rewrite_reference(
-            _address_of_line(english, caller, "JSL DecompressFontGFX"),
-            "DecompressFontGFX",
-            "JP_DecompressFontGFX",
-        )
-        english.rewrite_reference(
             _address_of_line(english, caller, "JSL TransferFontToVRAM"),
             "TransferFontToVRAM",
-            "JP_TransferFontToVRAM",
+            "EN_TransferFontToVRAM_Credits",
         )
-    # DecompressFontGFX depends on a WRAM offset table (TEXTDECOMP, $7F5B00)
-    # that only BuildSomeTextMasks populates; the table is static once
-    # built, so BuildSomeTextMasks's own no-op English hook is harmless as
-    # long as the JP original still runs once, at boot, via its one caller.
-    english.rename("UNREACHABLE_BuildSomeTextMasks", "JP_BuildSomeTextMasks")
-    english.rewrite_reference(
-        _address_of_line(
-            english, "Intro_CreateTextPointers", "JSL BuildSomeTextMasks"
-        ),
-        "BuildSomeTextMasks",
-        "JP_BuildSomeTextMasks",
+    # Real US's own Intro_InitializeMemory dispatch (usdasm bank_0C) has
+    # eleven steps; JP's (this bank) has twelve, because JP splits US's
+    # single Intro_LoadTextAndPalettes step into two: this one and a
+    # separate DecompressFontGFX dispatch slot -- which, like every other
+    # DecompressFontGFX caller, is a no-op in the English build. That
+    # dispatch slot still costs a full frame just to be reached and
+    # immediately RTL. The now-dead BuildSomeTextMasks call site is
+    # repurposed to bump $B0 an extra time, so next frame's dispatch skips
+    # straight over the dead slot -- matching the real US ROM's frame
+    # count exactly without touching the shared dispatch table itself.
+    intro_dead_call = _address_of_line(
+        english, "Intro_CreateTextPointers", "JSL BuildSomeTextMasks"
+    )
+    skip_dead_slot = Relocation()
+    skip_dead_slot.place(
+        Assembly.from_content(
+            [
+                "Intro_CreateTextPointers_SkipDeadSlot:",
+                "INC.b $B0",
+                f"JML ${intro_dead_call + 4:06X}",
+            ]
+        ).ensure_anchors(),
+        0x2EFD30,
+        "[ENG-TEXT] Intro_CreateTextPointers: skip Module00_Intro's next"
+        " dispatch slot (DecompressFontGFX, a permanent no-op here) -- see"
+        " above.",
+    )
+    english.add(skip_dead_slot)
+    english.relocate_block(
+        intro_dead_call,
+        "EN_Intro_CreateTextPointers_SkipDeadSlot",
+        resume=intro_dead_call + 4,
     )
     if not keep_jp_credits:
         # Credits_FadeColorAndBeginAnimating ends the staff-credits scroll
@@ -2074,34 +2174,27 @@ def apply_base_edits(
     if us_title_screen:
         # Module00_Intro's dispatch table repointed at title_screen()'s bank
         # $28 (four set_operand swaps, so the table's byte width -- and every
-        # anchor after it -- never changes): slots 5/6/7 (Intro_FadeLogoIn /
-        # Intro_PopSubtitleCard / Intro_TrianglesBeforeAttract) go to the
-        # hand-written replacements that splice the sword calls back in (see
-        # resources/title_screen.asm) and the new Intro_SwordStab state; slot
-        # 8 (Intro_InitializeTriforcePolyThread, a second copy of slot 2) is
-        # repurposed for the fourth new state rather than growing the table,
-        # since it is unreachable in practice -- slot 7's replacement always
-        # ends the module (switches to Module14_Attract) before the
-        # submodule counter reaches 8. The leading skip-check
-        # (CMP.b #$04 -- press Start/B once submodule >= 4) is untouched, so
-        # the US logo/sword sequence stays skippable exactly where JP 1.0's
-        # own logo is: as soon as the triforce finishes forming.
-        dispatch = "Module00_Intro"
-        for old, new in (
-            ("dl Intro_FadeLogoIn", "dl EN_TitleScreenUS_FadeLogoIn"),
-            ("dl Intro_PopSubtitleCard", "dl EN_Intro_SwordStab"),
-            (
-                "dl Intro_TrianglesBeforeAttract",
-                "dl EN_TitleScreenUS_PopSubtitleCard",
+        # anchor after it -- never changes): `LDA.b $11 / JSL JumpTableLong`
+        # at Module00_Intro's `.run_submodule` reads its own dispatch table
+        # from JumpTableLong's return address (see title_screen.asm's
+        # Module00_Intro_Dispatch), so relocating just the `JSL
+        # JumpTableLong` call brings a grown (10 -> 11 entry) copy of the
+        # table to bank $28 with it -- no base-bank table entries touched
+        # in place, and slot 8 (which Save & Quit and Attract_LoadNewScene
+        # both jump to directly) stays exactly vanilla. `JSL JumpTableLong`
+        # is exactly 4 bytes, matching a JML's own footprint: no orphan
+        # bytes, and the original (now unreachable) 10-entry table right
+        # after it is left as-is.
+        english.relocate_block(
+            0x0CC115,
+            "EN_Module00_Intro_Dispatch",
+            resume=0x0CC119,
+            comment=(
+                "; [ENG-TITLE] Module00_Intro's dispatch -> a grown copy "
+                "(bank $28, title_screen.asm) with the US-ified states",
+                "; spliced in and slot 8 left vanilla. "
+                "--us-title-screen only.",
             ),
-        ):
-            english.set_operand(_address_of_line(english, dispatch, old), new)
-        # Slot 8's own text ("dl Intro_InitializeTriforcePolyThread") is
-        # identical to slot 2's -- _address_of_line's text search would find
-        # slot 2 (still needed) first, so this one has to go by its own
-        # pristine JP address instead.
-        english.set_operand(
-            0x0CC131, "dl EN_TitleScreenUS_TrianglesBeforeAttract"
         )
         # SheetsTable_AA1 row $23 (bank $00, read by InitializeTilesets,
         # called from Intro_InitializeDefaultGFX with $0AA1=$23): the code
@@ -2191,13 +2284,23 @@ def apply_base_edits(
         # $0AB1=$05/$0AB4=$03 (the values the pulled routine sets -- also
         # shared by JP's own dead copy of Intro_LoadAllPalettes, so this
         # slot is intro-only, never touched by real overworld-area palette
-        # loads), the "owaux"/OW-area sub-tables it indexes into hold
-        # genuinely different colors in JP's disassembly (found by tracing
-        # every PaletteLoadMultiple source pointer live during this exact
-        # call, then diffing JP's vs US's raw ROM bytes at each one -- most
-        # matched, nine rows didn't). JP's rows here are otherwise-unused
-        # filler ($7FFF/$0000 repeats or a stray non-color byte), not real
-        # JP-game colors, so rewriting them can't affect anything else.
+        # loads), some of the "owaux"/OW-area sub-tables it indexes into
+        # hold genuinely different colors in JP's disassembly (found by
+        # tracing every PaletteLoadMultiple source pointer live during this
+        # exact call, then diffing JP's vs US's raw ROM bytes at each one).
+        # Two rows here are otherwise-unused JP filler ($7FFF/$0000
+        # repeats), not real JP-game colors, so rewriting them in place
+        # can't affect anything else -- unlike the four rows above, these
+        # aren't shared with Module14_Attract's own background: the second
+        # one feeds PaletteLoad_OWBG3 ($0AB8-indexed, CGRAM $71-$77), whose
+        # *only* caller in the whole game is FileSelect_InitializeGFX, not
+        # anything in Module14_Attract -- confirmed live, its title-screen
+        # value (loaded once, area 5) simply persists unchanged through
+        # attract in both JP and the real US ROM, so an in-place edit here
+        # doesn't leak the way the four rows above did. (Left mostly at
+        # JP's own $0000 filler until the credits' triforce-room curtain
+        # investigation traced a visible black strip in the attract
+        # scene's own scroll graphic back to this same row.)
         for old, new in (
             (
                 "dw  $4DAD,  $4DAD,  $4DAD,  $4DAD,  $4DAD,  $4DAD,  $4DAD",
@@ -2211,44 +2314,14 @@ def apply_base_edits(
             english.set_operand(
                 _address_of_line(english, "PaletteData", old), new
             )
-        # $7FFF-repeat rows: three occurrences of the identical text, so
-        # each needs its own address-anchored needle to disambiguate.
-        for anchor, new in (
-            (
-                0x1BE826,
-                "dw  $5D8C,  $558A,  $76B3,  $7AF4,  $0D23,  $11C4,  $2287",
-            ),
-            (
-                0x1BE834,
-                "dw  $4908,  $558A,  $76B3,  $7AF4,  $2CA3,  $3584,  $3E09",
-            ),
-            (
-                0x1BE842,
-                "dw  $6A0F,  $6E50,  $6E71,  $76B3,  $558A,  $69EE,  $7B17",
-            ),
-            (
-                0x1BE906,
-                "dw  $7FFF,  $3DEF,  $14A5,  $14A5,  $0000,  $6318,  $4E73",
-            ),
-        ):
-            english.set_operand(
-                _address_of_line(
-                    english,
-                    "PaletteData",
-                    f"#_{anchor:06X}: dw  $7FFF,  $7FFF,  $7FFF,  $7FFF,  "
-                    "$7FFF,  $7FFF,  $7FFF",
-                ),
-                new,
-            )
-        # $0000-repeat row: two occurrences, same disambiguation need.
         english.set_operand(
             _address_of_line(
                 english,
                 "PaletteData",
-                "#_1BE850: dw  $0000,  $0000,  $0000,  $0000,  $0000,  "
-                "$0000,  $0000",
+                f"#_{0x1BE906:06X}: dw  $7FFF,  $7FFF,  $7FFF,  $7FFF,  "
+                "$7FFF,  $7FFF,  $7FFF",
             ),
-            "dw  $190A,  $3549,  $45EC,  $6E50,  $258D,  $3A32,  $5F3A",
+            "dw  $7FFF,  $3DEF,  $14A5,  $14A5,  $0000,  $6318,  $4E73",
         )
         english.set_operand(
             _address_of_line(
@@ -2267,6 +2340,50 @@ def apply_base_edits(
             ),
             "dw  $044E,  $0009,  $0CFC,  $63DF,  $4E73,  $323F,  $0C75",
         )
+        # The other four rows of this same owmain_05 block (CGRAM
+        # $21-$27/$31-$37/$41-$47/$51-$57, at PaletteData addresses
+        # $1BE826/$1BE834/$1BE842/$1BE850 -- also originally JP filler,
+        # $7FFF/$0000 repeats) are the title screen's own background during
+        # the sword-reveal/logo phase (confirmed live: a fresh CGRAM dump
+        # taken on that exact screen read back this table's raw, un-faded
+        # filler verbatim -- a solid white background with a black
+        # rectangle blending into it, not "slightly off colors"). An
+        # earlier attempt here corrected them to the real US ROM's values
+        # and was reverted, based on a steady-state attract-mode CGRAM read
+        # that showed the *old*, unedited JP filler still winning there --
+        # but that predates TitleScreenUS_AttractInitializePalettes (this
+        # module's own Attract_Initialize hook, above): it already issues
+        # its own PaletteLoad_OWBGMain call (area 4) every time attract
+        # starts, which overwrites these exact same five CGRAM destinations
+        # (the destination is fixed at $0042/+$20 per row; only the source
+        # area differs) with attract's own colors regardless of whatever
+        # the title screen left behind -- so fixing the title screen's own
+        # copy here no longer has anywhere to leak into.
+        for old, new in (
+            (
+                f"#_{0x1BE826:06X}: dw  $7FFF,  $7FFF,  $7FFF,  $7FFF,  "
+                "$7FFF,  $7FFF,  $7FFF",
+                "dw  $5D8C,  $558A,  $76B3,  $7AF4,  $0D23,  $11C4,  $2287",
+            ),
+            (
+                f"#_{0x1BE834:06X}: dw  $7FFF,  $7FFF,  $7FFF,  $7FFF,  "
+                "$7FFF,  $7FFF,  $7FFF",
+                "dw  $4908,  $558A,  $76B3,  $7AF4,  $2CA3,  $3584,  $3E09",
+            ),
+            (
+                f"#_{0x1BE842:06X}: dw  $7FFF,  $7FFF,  $7FFF,  $7FFF,  "
+                "$7FFF,  $7FFF,  $7FFF",
+                "dw  $6A0F,  $6E50,  $6E71,  $76B3,  $558A,  $69EE,  $7B17",
+            ),
+            (
+                f"#_{0x1BE850:06X}: dw  $0000,  $0000,  $0000,  $0000,  "
+                "$0000,  $0000,  $0000",
+                "dw  $190A,  $3549,  $45EC,  $6E50,  $258D,  $3A32,  $5F3A",
+            ),
+        ):
+            english.set_operand(
+                _address_of_line(english, "PaletteData", old), new
+            )
         # InitializeSceneSprite_Copyright (bank $0C): sets the copyright
         # line's starting X position. US starts 12px further left ($4C,
         # not JP's $58) to keep the longer "1991,1992" text centered --
@@ -2279,6 +2396,107 @@ def apply_base_edits(
                 english, "InitializeSceneSprite_Copyright", "LDA.b #$58"
             ),
             "LDA.b #$4C",
+        )
+        # IntroTriangle_MoveIntoPlace's own pool (bank $0C): the three
+        # title-screen triforce triangles' landing Y coordinates. US sets
+        # them 8px lower than JP ($58/$30/$58 vs JP's $50/$28/$50, X
+        # unchanged at $4B/$5F/$75) -- confirmed by diffing this pool
+        # directly between the disassemblies, after the user reported the
+        # triforce sitting noticeably higher than the real US ROM's, at
+        # exactly JP's own title-screen height. This pool/routine is only
+        # ever reached from this one title-screen sprite (grepped: every
+        # reference is local to this routine's own dispatch table, bank
+        # $0C only), so a byte-neutral constant swap is safe -- no
+        # relocation needed. The two $50 values are edited by explicit
+        # address since "db $50" alone is ambiguous (matches both).
+        english.set_operand(
+            _address_of_pool_line(
+                english, "IntroTriangle_MoveIntoPlace", "#_0CC5A1: db $50"
+            ),
+            "db $58",
+        )
+        english.set_operand(
+            _address_of_pool_line(
+                english, "IntroTriangle_MoveIntoPlace", "db $28"
+            ),
+            "db $30",
+        )
+        english.set_operand(
+            _address_of_pool_line(
+                english, "IntroTriangle_MoveIntoPlace", "#_0CC5A3: db $50"
+            ),
+            "db $58",
+        )
+        # AnimateSceneSprite_DrawTriangle (bank $0C): JP shares this ONE
+        # routine (and its .rightside_objects/.leftside_objects pool,
+        # priority 2 -- $2B/$6B) between three different US ROM scenes: the
+        # title-screen logo triangles, the credits' triforce-room scene,
+        # and the rolling credits triangle. The real US ROM's own title
+        # screen wants priority 1 ($1B/$5B) there (confirmed by live OAM
+        # comparison) -- but its triforce-room/credits scenes use a
+        # *separate* routine (DrawTriforceRoomTriangle) that stays at
+        # priority 2 (confirmed live via a real credits save state: a
+        # simple in-place priority-1 edit here left the credits' own
+        # triforce sitting behind a priority-3 curtain sprite, wrong).
+        # relocate_block replaces the routine itself with one that checks
+        # the sprite's own subtype ($1E18,X, set once at init) and picks
+        # the matching pool, so JP's original 3 callers (Triangle/
+        # TriforceRoomTriangle/CreditsTriangle), still plain same-bank
+        # JSR, unchanged, each land on the right one automatically.
+        #
+        # This crashed on every earlier attempt, during an entirely
+        # ordinary cold boot (confirmed via this project's own fresh-boot
+        # test harness) -- root-caused by directly inspecting the stack at
+        # the crash site: this routine is reached via a bare JML (bank
+        # $0C -> $28), which changes the program bank (K) but touches
+        # nothing on the stack, yet it was ending in a plain RTS. RTS
+        # only restores the 16-bit PC, never K -- so execution landed at
+        # the right *address* but still in bank $28, running whatever
+        # unrelated data happens to live there as code. The fix: JML back
+        # to bank $0C first (restoring K), landing on the original
+        # routine's own now-orphaned RTS (left intact in ROM by
+        # relocate_block at the tail of the displaced block) -- that RTS,
+        # executing with the correct bank already restored, then correctly
+        # consumes the caller's own JSR-pushed return address. `LDA.b #$10
+        # / STA.b $06` is exactly 4 bytes, matching a JML's own footprint:
+        # no orphan bytes, and everything from STZ.b $07 onward (including
+        # the now-unreferenced pool and the routine's own original RTS,
+        # which the replacement's own ending jumps back to) is left as-is.
+        english.relocate_block(
+            0x0CC6DD,
+            "EN_TitleScreenUS_DrawTriangle",
+            resume=0x0CC6E1,
+            comment=(
+                "; [ENG-TITLE] AnimateSceneSprite_DrawTriangle -> a "
+                "subtype-aware replacement (bank $28, title_screen.asm);",
+                "; keeps the title screen at priority 1 without also "
+                "changing the triforce-room/credits scenes. "
+                "--us-title-screen only.",
+            ),
+        )
+        # Attract_Initialize (bank $0C): the real US ROM's own version
+        # additionally sets $0AB3=4 and calls PaletteLoad_OWBGMain here --
+        # JP's original doesn't, leaving the attract background's own
+        # CGRAM rows (e.g. $21-$27) stuck holding whatever the title
+        # screen's own Intro_LoadAllPalettes (area 5) last put there,
+        # confirmed live as raw, unprocessed JP filler (solid white).
+        # `JSL TransferAttractPlaques` is exactly 4 bytes, matching a
+        # JML's own footprint: no orphan bytes, and the routine's own
+        # tail (from JSL PaletteLoad_LinkArmorAndGloves on, including its
+        # same-bank JSR calls to Attract_BuildBackgrounds/
+        # Attract_SetUpWindowingHDMA) is untouched, reached by the pulled
+        # copy's own JML back.
+        english.relocate_block(
+            0x0CED7E,
+            "EN_TitleScreenUS_AttractInitializePalettes",
+            resume=0x0CED82,
+            comment=(
+                "; [ENG-TITLE] Attract_Initialize -> the pulled "
+                "$0AB3=4/PaletteLoad_OWBGMain call (bank $28,",
+                "; title_screen.asm); loads the attract background's own "
+                "colors instead of leaving the title screen's. "
+                "--us-title-screen only.",
+            ),
         )
 
 
@@ -2446,6 +2664,7 @@ def build(
     keep_religious_imagery: bool = False,
     epilepsy_fix: bool = True,
     keep_jp_credits: bool = False,
+    credits_font: str = "jp",
     us_title_screen: bool = False,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
@@ -2481,7 +2700,12 @@ def build(
     (also only meaningful alongside ``changes``) skips
     :func:`credits_bank`'s handful of JP-mistake text fixes, leaving the
     (already JP-fonted) credits text exactly as JP 1.0 shipped it. Player
-    names are a 6-character field. ``us_title_screen`` (also only meaningful
+    names are a 6-character field. ``credits_font`` (also only meaningful
+    alongside ``changes``) picks which font credits render with: ``"jp"``
+    (default) is JP 1.0's own bolder font, computed offline from the JP ROM;
+    ``"us"`` instead pulls the same character set from the US dialogue font,
+    so credits match the look of the rest of the (US-fonted) game -- see
+    :func:`credits_font_upload`. ``us_title_screen`` (also only meaningful
     alongside ``changes``) swaps the (default JP-native) title-screen logo
     for the US ROM's logo + animated sword, keeping JP 1.0's own
     press-to-skip timing (skippable as soon as the triforce forms, not
@@ -2500,6 +2724,9 @@ def build(
             nop_padbyte_threshold=nop_padbyte_threshold,
         ),
         font_upload(sources, changes=changes),
+        credits_font_upload(
+            sources, changes=changes, credits_font=credits_font
+        ),
         credits_bank(
             sources, changes=changes, keep_jp_credits=keep_jp_credits
         ),

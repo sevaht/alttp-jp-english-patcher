@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""
+binextract-jp-credits-font.py -- regenerate the JP credits' bold font for the
+English translation from your own JP 1.0 ROM. Nothing copyrighted is
+committed to this repo; the `binextract.py` stub runs this (alongside
+binextract-jp.py, binextract-us.py, binextract-us-credits-font.py) to
+produce `bin/gfx/jp_credits_font.2bpp`.
+
+    python3 binextract-jp-credits-font.py              # uses ./alttp.sfc
+    python3 binextract-jp-credits-font.py --jp-rom JP.sfc
+
+You need the JP 1.0 ROM (md5 $jp_rom_md5), by default named `alttp.sfc` in
+this directory.
+
+JP 1.0 ships its credits' (bolder, nicer-looking) font pre-compressed, needing
+a bespoke bit-packed decompression pass at runtime (`DecompressFontGFX`,
+bank_0E) before the game can display it -- this script does that same
+decompression once, here, offline, from the raw ROM bytes (NO emulator is
+used), producing a plain flat 2bpp tile sheet the game can just `incbin` and
+upload directly, the same way it already does for the English dialogue font.
+Only the glyphs credits actually display (NEEDED_GLYPHS, ~69 of the font's
+512) are decompressed; everything else -- almost all of it, JP's kanji/kana
+that only its own (now unreachable) native dialogue renderer ever read --
+is left blank. This changes nothing else about the ROM: the source asset
+this decompresses from is untouched either way (this project only hooks in
+and adds, never deletes), this is purely about not bothering to unpack the
+~86% of the font nothing in this build ever displays. Output is verified
+against a known md5; the script stops loudly if it doesn't match (wrong ROM
+revision/region, or this algorithm needs revisiting for that revision).
+
+GENERATED from alttp_jp_english_patcher/jp_credits_font_asset.py -- do not
+hand-edit; change that module and redeploy to regenerate this file.
+"""
+import argparse, hashlib, os, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(HERE, "bin", "gfx")
+
+JP_ROM_MD5 = $jp_rom_md5
+OUTPUT_MD5 = $output_md5
+
+TEXTGFX_BANK = 0x0E
+TEXTGFX_ADDR = 0x8000
+TEXTCHARMASKS_BANK = 0x0E
+TEXTCHARMASKS_ADDR = 0xB844
+NUM_GLYPHS = 512
+ELLIPSIS_GLYPH = 0xCC  # DecompressFontGFX force-clears this one glyph's tile.
+
+# Glyph indices Credits_CharacterToTile actually references (jpdasm bank_0E);
+# every other glyph is skipped -- its output bytes stay 0. TEXTDECOMP's own
+# cumulative byte-offset table still has to be built across ALL glyphs
+# first (each glyph's start offset depends on every earlier glyph's own
+# size), so this only skips the expensive per-glyph decompression step, not
+# that bookkeeping.
+NEEDED_GLYPHS = $needed_glyphs
+
+
+def md5(b):
+    return hashlib.md5(b).hexdigest()
+
+
+def die(msg):
+    print("ERROR:", msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def check_rom(path):
+    if not path or not os.path.isfile(path):
+        die(f"JP ROM not found: {path!r}")
+    got = md5(open(path, "rb").read())
+    if got != JP_ROM_MD5:
+        die(
+            f"JP ROM md5 mismatch: got {got}, expected {JP_ROM_MD5}\n"
+            f"       (this must be the JP 1.0 release)"
+        )
+    print(f"  JP ROM ok ({got})")
+
+
+def lorom_offset(bank, addr):
+    return bank * 0x8000 + (addr - 0x8000)
+
+
+def read_bytes(rom, bank, addr, count):
+    off = lorom_offset(bank, addr)
+    return rom[off : off + count]
+
+
+def build_text_decomp(rom):
+    """TEXTDECOMP: cumulative popcount (byte offset into TextGFX) before each
+    glyph -- BuildSomeTextMasks's own table, computed the same way here."""
+    offsets = [0] * NUM_GLYPHS
+    cumulative = 0
+    for glyph in range(NUM_GLYPHS):
+        offsets[glyph] = cumulative
+        mask = read_bytes(rom, TEXTCHARMASKS_BANK, TEXTCHARMASKS_ADDR + glyph * 5, 5)
+        cumulative += sum(bin(b).count("1") for b in mask)
+    return offsets
+
+
+def glyph_bit_positions(mask):
+    """0-indexed bit positions (0 = MSB of mask[0]) to walk for this glyph --
+    up to and including the position of the last (lowest) set bit, matching
+    RenderText_DecompressAndDrawSingle's early-exit shift loop exactly."""
+    value = int.from_bytes(mask, "big")
+    if value == 0:
+        return range(0)
+    lowest_set_from_lsb = (value & -value).bit_length() - 1
+    last_position_from_msb = 39 - lowest_set_from_lsb
+    return range(last_position_from_msb + 1)
+
+
+def decompress_glyph_staging(rom, glyph, text_decomp):
+    """RenderText_DecompressAndDrawSingle's 50-byte ($$7EBFC0-equivalent)
+    staging buffer for one glyph."""
+    staging = bytearray(50)
+    mask = read_bytes(rom, TEXTCHARMASKS_BANK, TEXTCHARMASKS_ADDR + glyph * 5, 5)
+    value = int.from_bytes(mask, "big")
+    source_pos = text_decomp[glyph]
+    dest_index = 3
+    for pos in glyph_bit_positions(mask):
+        dest_index += 1
+        bit = (value >> (39 - pos)) & 1
+        if bit:
+            src = read_bytes(rom, TEXTGFX_BANK, TEXTGFX_ADDR + source_pos, 1)[0]
+            staging[dest_index] = src
+            source_pos += 1
+    return bytes(staging)
+
+
+def _distribute(staging, y, buf, dest_base):
+    """CopyDecompressedCharToTransferBuffer's shift_next_a/b/c/d: LSR the
+    staging byte at `y` 8 times (LSB first), RORing each extracted bit into
+    buf[dest_base + x] for x = 14,12,...,0 (in that order)."""
+    v = staging[y]
+    for x in (14, 12, 10, 8, 6, 4, 2, 0):
+        bit = v & 1
+        v >>= 1
+        old = buf[dest_base + x]
+        buf[dest_base + x] = ((old >> 1) | (bit << 7)) & 0xFF
+
+
+def transfer_buffer(staging):
+    """CopyDecompressedCharToTransferBuffer, in full: phase 1 word-copies
+    staging[0:16]/[22:38] into a 64-byte work buffer; phase 2 zeroes the
+    other half; phases 3/4 distribute staging[16:22]/[38:44] one bit per
+    destination byte; phase 5 combines each half with a carry-in from the
+    other via one more shift-left-with-carry, byte by byte."""
+    buf = bytearray(0x40)
+    for i in range(16):
+        buf[i] = staging[i]
+        buf[0x20 + i] = staging[22 + i]
+    for y in (21, 19, 17):
+        _distribute(staging, y, buf, 0x11)
+    for y in (20, 18, 16):
+        _distribute(staging, y, buf, 0x10)
+    for y in (21, 19, 17):
+        _distribute(staging, 22 + y, buf, 0x31)
+    for y in (20, 18, 16):
+        _distribute(staging, 22 + y, buf, 0x30)
+    for x in range(15, -1, -1):
+        carry = (buf[0x10 + x] >> 7) & 1
+        buf[x] = ((buf[x] << 1) | carry) & 0xFF
+        carry = (buf[0x30 + x] >> 7) & 1
+        buf[0x20 + x] = ((buf[0x20 + x] << 1) | carry) & 0xFF
+    return bytes(buf[0:16]) + bytes(buf[0x20:0x30])
+
+
+def slot_for_glyph(glyph):
+    """DecompressFontGFX's own destination-slot progression: +1 per glyph,
+    plus an extra +16 every 16th glyph (an X-register skip pattern in the
+    original loop) -- each glyph ends up 32 slots apart per 16 processed."""
+    return (glyph // 16) * 32 + (glyph % 16)
+
+
+def build_full_buffer(rom):
+    """Reproduces the flat 8192-byte buffer TransferFontToVRAM DMAs to VRAM
+    for the credits' bold font, byte-for-byte -- for NEEDED_GLYPHS only;
+    every other glyph's slot(s) stay 0 (never decompressed)."""
+    text_decomp = build_text_decomp(rom)
+    full = bytearray(8192)
+    for glyph in NEEDED_GLYPHS:
+        staging = decompress_glyph_staging(rom, glyph, text_decomp)
+        tb = bytes(32) if glyph == ELLIPSIS_GLYPH else transfer_buffer(staging)
+        slot = slot_for_glyph(glyph)
+        base0 = slot * 16
+        base1 = 0x100 + slot * 16
+        if base0 + 16 <= len(full):
+            full[base0 : base0 + 16] = tb[0:16]
+        if base1 + 16 <= len(full):
+            full[base1 : base1 + 16] = tb[16:32]
+    return bytes(full)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="extract (by decompressing) the JP credits' bold font"
+        " for the English build"
+    )
+    ap.add_argument(
+        "--jp-rom",
+        default=os.path.join(HERE, "alttp.sfc"),
+        help="JP 1.0 ROM (default: ./alttp.sfc)",
+    )
+    a = ap.parse_args()
+
+    a.jp_rom = os.path.abspath(a.jp_rom)
+    print("Validating ROM:")
+    check_rom(a.jp_rom)
+    os.makedirs(OUT, exist_ok=True)
+
+    print("Decompressing JP credits font:")
+    rom = open(a.jp_rom, "rb").read()
+    data = build_full_buffer(rom)
+    got = md5(data)
+    out = os.path.join(OUT, "jp_credits_font.2bpp")
+    open(out, "wb").write(data)
+    ok = got == OUTPUT_MD5
+    status = "OK" if ok else "MD5 MISMATCH"
+    print(f"  bin/gfx/jp_credits_font.2bpp {got}  [{status}]")
+    if not ok:
+        die(
+            "decompressed output did not match the expected md5.\n"
+            "       Double-check that your JP ROM matches the md5 at the"
+            " top of this script."
+        )
+    print("\nJP credits font extracted and verified.")
+
+
+if __name__ == "__main__":
+    main()

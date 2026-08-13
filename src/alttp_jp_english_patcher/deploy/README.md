@@ -38,17 +38,22 @@ correctly; pass `--no-intro-fix` when generating to keep JP 1.0's original
 
 ### Credits
 
-The ending credits keep JP 1.0's own font rather than being converted to the
-US Latin font used everywhere else — JP's credits text is already English,
-and its font reads better than a straight conversion would, so the credits
-intentionally look different from the rest of the game. By default this
-build also fixes a handful of JP 1.0 translation mistakes to match the US
+By default, the ending credits keep JP 1.0's own (bolder) font rather than
+being converted to the US Latin font used everywhere else — JP's credits
+text is already English, and its font reads better than a straight
+conversion would, so the credits intentionally look different from the
+rest of the game. Pass `--credits-font us` when generating to use the US
+dialogue font there instead, matching the rest of the game's look; either
+way, this is computed offline (no runtime decompression, no emulator) from
+your own ROMs at extraction time (`binextract-jp-credits-font.py` /
+`binextract-us-credits-font.py`), never committed. By default this build
+also fixes a handful of JP 1.0 translation mistakes to match the US
 release: "THE LOYAL PRIEST" → "THE LOYAL SAGE", "FINGER WEBS FOR SALE" →
 "FLIPPERS FOR SALE" (centered — the US release left it off-center),
 "OCARINA BOY PLAYS AGAIN" → "FLUTE BOY PLAYS AGAIN", "GANNON'S TOWER" →
 "GANON'S TOWER", and adds the US-only "ENGLISH SCRIPT WRITERS" attribution.
 Pass `--keep-jp-credits` when generating to leave the credits text exactly
-as JP 1.0 shipped it (the font still changes back to JP's own either way).
+as JP 1.0 shipped it (the font choice is independent either way).
 
 ### Weathercock
 
@@ -77,6 +82,15 @@ photosensitive-epilepsy-safety pass; this build applies that same reduction
 by default. Pass `--no-epilepsy-fix` when generating to keep JP 1.0's
 original (much brighter) flash intensity instead.
 
+### US-styled title screen
+
+The US ROM's title screen plays a sword-reveal animation (the Triforce
+splits open and the Master Sword rises out of it) before settling into the
+logo; JP 1.0 skips straight to the logo without it. By default this build
+keeps JP 1.0's own title screen; pass `--us-title-screen` when generating
+to replace it with the US ROM's version instead, including its attract-mode
+background colors and title-logo/triforce OAM layering.
+
 ---
 
 ## Building
@@ -96,7 +110,7 @@ python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
 
 On Windows, run `binextract.py`, then `_build.bat`. `make` also works on any
 platform with `asarmon` on `PATH`. All three produce `alttp-english.sfc`; a
-correct default build has MD5 `c20728fb19cfcb8a56fabd9a4051b343`.
+correct default build has MD5 `62736828e14f14854477f3c74e930a04`.
 
 ## Binaries
 
@@ -107,7 +121,7 @@ both in the base directory:
 * `alttp.sfc` — JP 1.0 ROM (md5 `03a63945398191337e896e5771f77173`)
 * `alttp-us.sfc` — US ROM (md5 `608c22b8ff930c62dc2de54bcd6eba72`)
 
-Then run `python3 binextract.py`, which drives both extractors:
+Then run `python3 binextract.py`, which drives all four extractors:
 
 * `binextract-jp.py` — the base disassembly's own extractor: the JP graphics and
   audio binaries under `bin/` (from `alttp.sfc`).
@@ -115,6 +129,19 @@ Then run `python3 binextract.py`, which drives both extractors:
   (`us_*` files, alongside the JP ones there; from `alttp-us.sfc`): the US
   variable-width font and the file-select font/graphics/palette slices the
   graft repoints to.
+* `binextract-jp-credits-font.py` — the credits' bold font
+  (`jp_credits_font.2bpp`, from `alttp.sfc`): JP 1.0 ships this font
+  pre-compressed (a bespoke bit-packed scheme the game unpacks at runtime);
+  this script does that same unpacking once, offline, from the raw ROM
+  bytes (no emulator), so the build just uploads the flat result instead of
+  shipping the decompression routines. Only the ~69 glyphs credits actually
+  display are unpacked (everything else — almost all of it, JP's kanji/kana
+  that nothing in this build reads anymore — is skipped); the original
+  compressed asset is untouched either way, still sitting in the base ROM.
+* `binextract-us-credits-font.py` — a US-styled alternate for that same font
+  (`us_credits_font.2bpp`, from `alttp-us.sfc`; only used with
+  `--credits-font us`), same tile layout, each character's pixel data
+  instead pulled from the US dialogue font.
 
 Nothing copyrighted is committed here — everything under `bin/` is
 regenerated from your ROMs.

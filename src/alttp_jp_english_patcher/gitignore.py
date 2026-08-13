@@ -4,9 +4,12 @@
 The US-ROM-derived binaries under ``bin/gfx/`` (the ``us_*`` files, alongside
 the disassembly's own JP-ROM-derived ones there) are copyrighted game data and
 must not be committed (same policy as those); they are regenerated from the
-user's ROM by ``binextract-us.py``. Battery saves (``*.srm``) are player save
-state from testing the build (e.g. in an emulator), not source -- also not
-committed. Idempotent: only rules not already present are appended.
+user's ROM by ``binextract-us.py``. The credits' bold font (``jp_credits_
+font.2bpp``) is likewise derived (decompressed offline) from the user's own
+JP ROM by ``binextract-jp-credits-font.py`` -- not committed either, same
+policy. Battery saves (``*.srm``) are player save state from testing the
+build (e.g. in an emulator), not source -- also not committed. Idempotent:
+only rules not already present are appended.
 """
 
 from __future__ import annotations
@@ -25,6 +28,11 @@ _BLOCKS = (
             "bin/gfx/us_*.3bppc",
             "bin/gfx/us_*.bin",
         ),
+    ),
+    (
+        "# --- english translation: JP-ROM-derived credits font"
+        " (regenerate, don't commit) ---",
+        ("bin/gfx/jp_credits_font.2bpp", "bin/gfx/us_credits_font.2bpp"),
     ),
     (
         "# --- battery saves from testing the build (not source) ---",
