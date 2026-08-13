@@ -1,117 +1,14 @@
-; --us-title-screen: three Module00_Intro dispatch states, JP's own
-; Intro_FadeLogoIn/Intro_PopSubtitleCard/Intro_TrianglesBeforeAttract with the
-; US ROM's sword-animation calls spliced back in (US restructured these three
-; states' bodies around the sword; JP's originals are left in place, now
-; unreferenced -- apply_base_edits repoints the dispatch table here instead of
-; editing them in place, since growing them in place would need free space
-; the pristine bank doesn't reserve). Intro_HandleLogoSword/Intro_InitLogoSword
-; and IntroLogoPaletteFadeIn/IntroTitleCardPaletteFadeIn are the US ROM's
-; routines, pulled verbatim (see title_screen()) alongside this file into the
-; same relocation so all of them get EN_-namespaced together.
-
-; JP Intro_FadeLogoIn + US's extra Intro_InitLogoSword kickoff (once the fade
-; finishes, at frame delay $2A -- JP's own state used $20, US's has to last
-; through the new sword-stab state too) and IntroLogoPaletteFadeIn (a real
-; call: unlike PopSubtitleCard's tail-JML below, execution comes back here to
-; check the fade-done counter it left in $7EC007).
-TitleScreenUS_FadeLogoIn:
-    JSL Intro_HandleAllTriforceAnimations
-
-    LDA.b $1A
-    LSR A
-    BCC .exit_a
-
-    JSL IntroLogoPaletteFadeIn
-
-    LDA.l $7EC007
-    BNE .dont_advance
-
-    LDA.b #$2A
-    STA.b $B0
-
-    INC.b $11
-
-    JSR Intro_InitLogoSword
-
-.exit_a
-    RTL
-
-.dont_advance
-    CMP.b #$0D
-    BNE .exit_b
-
-    LDA.b #$15
-    STA.b $1C
-    STZ.b $1D
-
-.exit_b
-    RTL
-
-; JP Intro_PopSubtitleCard + US's extra Intro_HandleLogoSword upkeep and a
-; tail jump to IntroTitleCardPaletteFadeIn (US replaces JP's plain fade-timer
-; wait with a real palette unfade, tracked by the same $7EC007 counter
-; FadeLogoIn used). Advances to slot 10 (`LDA #$0A / STA $11`), not JP's
-; plain `INC.b $11` (which would land on slot 8): see
-; Module00_Intro_Dispatch below for why slots 8-9 have to stay vanilla and
-; slot 10 is this sequence's real next step now.
-TitleScreenUS_PopSubtitleCard:
-    JSR Intro_HandleLogoSword
-
-    JSL Intro_HandleAllTriforceAnimations
-
-    LDA.l $7EC007
-    BEQ .delay_fade
-
-    LDA.b $1A
-    LSR A
-    BCC .exit
-
-    ; Tail jump (not JSL): IntroTitleCardPaletteFadeIn's own RTL returns
-    ; straight to Module00_Intro's caller, same as the original US ROM.
-    JML IntroTitleCardPaletteFadeIn
-
-.delay_fade
-    LDA.b $F6
-    AND.b #$C0
-    ORA.b $F4
-    AND.b #$D0
-    BEQ .delay_music
-
-    JML FadeMusicAndResetSRAMMirror
-
-.delay_music
-    DEC.b $B0
-    BNE .exit
-
-    LDA.b #$0A
-    STA.b $11
-
-.exit
-    RTL
-
-; JP Intro_TrianglesBeforeAttract + US's extra Intro_HandleLogoSword upkeep
-; (keeps animating/clearing the sword sprite right up to the module switch).
-TitleScreenUS_TrianglesBeforeAttract:
-    JSL Intro_HandleAllTriforceAnimations
-
-    STZ.w $1F00
-    STZ.w $012A
-
-    JSR Intro_HandleLogoSword
-
-    DEC.b $B0
-    BNE .exit
-
-    INC.b $11
-
-    LDA.b #$14
-    STA.b $10
-
-    STZ.b $11
-    STZ.b $22
-
-.exit
-    RTL
+; --us-title-screen: the genuinely novel pieces of the US title screen's
+; sword animation. Everything that is just the US ROM's own routines
+; (Intro_FadeLogoIn/Intro_PopSubtitleCard/Intro_TrianglesBeforeAttract --
+; Module00_Intro_Dispatch below points straight at them now --
+; Intro_HandleLogoSword/Intro_InitLogoSword, IntroLogoPaletteFadeIn/
+; IntroTitleCardPaletteFadeIn) is pulled by name in title_screen() instead of
+; transcribed here; only TitleScreenUS_DrawTriangle's subtype-dispatch logic
+; and Module00_Intro_Dispatch's own hybrid table have no ROM original to pull
+; from. Every pulled piece lands in this same relocation so all of them get
+; EN_-namespaced together, and TitleScreenUS_DrawTriangle's own OAM object
+; tables (below) are spliced in from a US pull too, not hand-copied.
 
 ; Replaces Intro_LoadAllPalettes_long (bank $02, JP) via relocate_block: that
 ; wrapper is exactly 4 bytes (JSR Intro_LoadAllPalettes / RTL), matching a
@@ -201,77 +98,12 @@ TitleScreenUS_DrawTriangle:
     ; JSR-pushed return address and lands back in the right bank.
     JML $0CC6FC
 
-.rightside_objects
-    dw   0,   0 : db $80, $1B, $00, $02
-    dw  16,   0 : db $82, $1B, $00, $02
-    dw  32,   0 : db $84, $1B, $00, $02
-    dw  48,   0 : db $86, $1B, $00, $02
-    dw   0,  16 : db $A0, $1B, $00, $02
-    dw  16,  16 : db $A2, $1B, $00, $02
-    dw  32,  16 : db $A4, $1B, $00, $02
-    dw  48,  16 : db $A6, $1B, $00, $02
-    dw   0,  32 : db $88, $1B, $00, $02
-    dw  16,  32 : db $8A, $1B, $00, $02
-    dw  32,  32 : db $8C, $1B, $00, $02
-    dw  48,  32 : db $8E, $1B, $00, $02
-    dw   0,  48 : db $A8, $1B, $00, $02
-    dw  16,  48 : db $AA, $1B, $00, $02
-    dw  32,  48 : db $AC, $1B, $00, $02
-    dw  48,  48 : db $AE, $1B, $00, $02
-
-.leftside_objects
-    dw  48,   0 : db $80, $5B, $00, $02
-    dw  32,   0 : db $82, $5B, $00, $02
-    dw  16,   0 : db $84, $5B, $00, $02
-    dw   0,   0 : db $86, $5B, $00, $02
-    dw  48,  16 : db $A0, $5B, $00, $02
-    dw  32,  16 : db $A2, $5B, $00, $02
-    dw  16,  16 : db $A4, $5B, $00, $02
-    dw   0,  16 : db $A6, $5B, $00, $02
-    dw  48,  32 : db $88, $5B, $00, $02
-    dw  32,  32 : db $8A, $5B, $00, $02
-    dw  16,  32 : db $8C, $5B, $00, $02
-    dw   0,  32 : db $8E, $5B, $00, $02
-    dw  48,  48 : db $A8, $5B, $00, $02
-    dw  32,  48 : db $AA, $5B, $00, $02
-    dw  16,  48 : db $AC, $5B, $00, $02
-    dw   0,  48 : db $AE, $5B, $00, $02
-
-.tf_rightside_objects
-    dw   0,   0 : db $80, $2B, $00, $02
-    dw  16,   0 : db $82, $2B, $00, $02
-    dw  32,   0 : db $84, $2B, $00, $02
-    dw  48,   0 : db $86, $2B, $00, $02
-    dw   0,  16 : db $A0, $2B, $00, $02
-    dw  16,  16 : db $A2, $2B, $00, $02
-    dw  32,  16 : db $A4, $2B, $00, $02
-    dw  48,  16 : db $A6, $2B, $00, $02
-    dw   0,  32 : db $88, $2B, $00, $02
-    dw  16,  32 : db $8A, $2B, $00, $02
-    dw  32,  32 : db $8C, $2B, $00, $02
-    dw  48,  32 : db $8E, $2B, $00, $02
-    dw   0,  48 : db $A8, $2B, $00, $02
-    dw  16,  48 : db $AA, $2B, $00, $02
-    dw  32,  48 : db $AC, $2B, $00, $02
-    dw  48,  48 : db $AE, $2B, $00, $02
-
-.tf_leftside_objects
-    dw  48,   0 : db $80, $6B, $00, $02
-    dw  32,   0 : db $82, $6B, $00, $02
-    dw  16,   0 : db $84, $6B, $00, $02
-    dw   0,   0 : db $86, $6B, $00, $02
-    dw  48,  16 : db $A0, $6B, $00, $02
-    dw  32,  16 : db $A2, $6B, $00, $02
-    dw  16,  16 : db $A4, $6B, $00, $02
-    dw   0,  16 : db $A6, $6B, $00, $02
-    dw  48,  32 : db $88, $6B, $00, $02
-    dw  32,  32 : db $8A, $6B, $00, $02
-    dw  16,  32 : db $8C, $6B, $00, $02
-    dw   0,  32 : db $8E, $6B, $00, $02
-    dw  48,  48 : db $A8, $6B, $00, $02
-    dw  32,  48 : db $AA, $6B, $00, $02
-    dw  16,  48 : db $AC, $6B, $00, $02
-    dw   0,  48 : db $AE, $6B, $00, $02
+; [PULLED] .rightside_objects/.leftside_objects (US
+; AnimateSceneSprite_DrawTriangle's own pool, priority $1B/$5B) and
+; .tf_rightside_objects/.tf_leftside_objects (US
+; AnimateSceneSprite_DrawTriforceRoomTriangle's, priority $2B/$6B) are
+; spliced in here by title_screen() -- pulled from the US disassembly,
+; never transcribed.
 
 ; Replaces Attract_Initialize's "JSL TransferAttractPlaques" (bank $0C, JP)
 ; via relocate_block: the real US ROM's own Attract_Initialize sets
@@ -288,23 +120,13 @@ TitleScreenUS_DrawTriangle:
 ; -- none of TransferAttractPlaques/PaletteLoad_HUD/PaletteLoad_OWBGMain
 ; need a DBR or return-convention fix: JP's own code already reaches all
 ; three via plain JSL, so they're already RTL-ending and bank-agnostic.
+;
+; NOT a whole-routine pull: title_screen() slices just this prefix out of
+; US's own Attract_Initialize instead of transcribing it (see there for why
+; -- the routine's body diverges again a little further in, in a way this
+; build deliberately doesn't want).
 TitleScreenUS_AttractInitializePalettes:
-    JSL TransferAttractPlaques
-
-    LDA.b #$04
-    STA.w $0AB3
-
-    LDA.b #$01
-    STA.w $0AB2
-    STZ.w $0AA9
-
-    JSL PaletteLoad_HUD
-
-    LDA.b #$02
-    STA.w $0AA9
-
-    JSL PaletteLoad_OWBGMain
-    JSL PaletteLoad_HUD
+    ; [PULLED] US Attract_Initialize's own palette-loading prefix -- spliced in here by title_screen().
 
     JML $0CED97
 
@@ -336,14 +158,14 @@ TitleScreenUS_AttractInitializePalettes:
 ; `JMP.w (.vectors,X)` into the weeds and hanging with the screen forced
 ; black.
 ;
-; Slots 5-7 are the three hand-written US-ified states above, plus the new
-; Intro_SwordStab dispatch state in between (US restructured JP's 3-state
-; stretch into 4: FadeLogoIn, SwordStab, PopSubtitleCard,
-; TrianglesBeforeAttract). Slot 10 is genuinely free table space for the
-; fourth state (TrianglesBeforeAttract), which used to collide with
-; vanilla slot 8; TitleScreenUS_PopSubtitleCard (slot 7) jumps straight
-; there when done, skipping restored slots 8-9 instead of JP's plain
-; `INC.b $11`.
+; Slots 5-7 are the US ROM's own FadeLogoIn/SwordStab/PopSubtitleCard states
+; (US restructured JP's 3-state stretch into 4: FadeLogoIn, SwordStab,
+; PopSubtitleCard, TrianglesBeforeAttract) -- pulled by name into this same
+; relocation in title_screen(), not transcribed here. Slot 10 is genuinely
+; free table space for the fourth state (TrianglesBeforeAttract), which used
+; to collide with vanilla slot 8; Intro_PopSubtitleCard (slot 7, pulled with
+; its own 2 edits -- see title_screen()) jumps straight there when done,
+; skipping restored slots 8-9 instead of US's own plain `INC.b $11`.
 Module00_Intro_Dispatch:
     JSL JumpTableLong
     dl Intro_InitialInitialization
@@ -351,9 +173,9 @@ Module00_Intro_Dispatch:
     dl Intro_InitializeTriforcePolyThread
     dl Intro_HandleAllTriforceAnimations
     dl Intro_HandleAllTriforceAnimations
-    dl TitleScreenUS_FadeLogoIn
+    dl Intro_FadeLogoIn
     dl Intro_SwordStab
-    dl TitleScreenUS_PopSubtitleCard
+    dl Intro_PopSubtitleCard
     dl Intro_InitializeTriforcePolyThread
     dl Intro_HandleAllTriforceAnimations
-    dl TitleScreenUS_TrianglesBeforeAttract
+    dl Intro_TrianglesBeforeAttract

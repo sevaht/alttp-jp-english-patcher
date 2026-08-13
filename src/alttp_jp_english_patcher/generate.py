@@ -1579,13 +1579,17 @@ def file_select_palette(*, changes: bool) -> Relocation:
     return relocation
 
 
-def title_screen(sources: Sources) -> Relocation:
+def title_screen(
+    sources: Sources, *, changes: bool, us_title_screen: bool
+) -> Relocation:
     """Bank ``$28``: the US title-screen sword animation, for
-    ``--us-title-screen``. The caller only includes this relocation (and
-    ``bank_28.asm``'s ``incsrc``) when that flag is on: unlike this module's
-    other graft banks, there is no ``changes``-style "present but inert" mode
-    to fall back to here (see :func:`title_screen_graphics` for why one
-    matters there but not here).
+    ``--us-title-screen``. Same present-but-inert shape as :func:`graphics`:
+    this bank's content is always built and placed, in every build
+    (including ``--baseline``) -- only ``hooked`` (and so the base-bank
+    landing pad and every alias) is conditional on ``us_title_screen``, so a
+    build without the flag leaves the base pointing at JP's own title screen
+    untouched, same as :func:`title_screen_graphics` already does for its
+    sheets.
 
     ``Intro_SwordStab`` (the US-only dispatch state) and everything it reaches
     -- ``Intro_InitLogoSword``/``Intro_HandleLogoSword`` and the three
@@ -1604,14 +1608,17 @@ def title_screen(sources: Sources) -> Relocation:
     bare ``RTS`` routine directly across banks silently leaves its pushed bank
     byte on the stack, corrupting every return after it.
 
-    Alongside these pulls: three small hand-written replacements for
-    ``Intro_FadeLogoIn``/``Intro_PopSubtitleCard``/
-    ``Intro_TrianglesBeforeAttract`` (``resources/title_screen.asm`` -- JP's
-    own routines with the US ROM's sword-animation calls spliced back in; see
-    that file for why they are hand-written copies rather than in-place edits
-    or a US pull). Every source lands in this one relocation so their
-    cross-references (the hand-written routines call the pulled routines by
-    their bare US names) get ``EN_``-namespaced together in one pass.
+    Also pulled (end of ``names``, see the comment there): ``Intro_
+    FadeLogoIn``/``Intro_PopSubtitleCard``/``Intro_TrianglesBeforeAttract``,
+    the three Module00_Intro dispatch states the US ROM restructured around
+    the sword -- unedited except ``Intro_PopSubtitleCard``'s own 2 small
+    edits (also below). Everything genuinely novel -- with no ROM original to
+    pull instead -- is hand-written in ``resources/title_screen.asm``:
+    ``TitleScreenUS_DrawTriangle``'s subtype-dispatch logic and
+    ``Module00_Intro_Dispatch``'s own hybrid table. Every source lands in
+    this one relocation so cross-references between pulled and hand-written
+    pieces (by their bare US names) get ``EN_``-namespaced together in one
+    pass.
     """
     us = sources.us
     # Source order (pool immediately precedes its same-named routine); each
@@ -1680,6 +1687,20 @@ def title_screen(sources: Sources) -> Relocation:
         # the bank-$28 copy instead of round-tripping through the bank-$0C
         # landing pad meant for the *other* 3 (still-external) callers.
         "AnimateSceneSprite_AddObjectsToOAMBuffer",
+        # The three Module00_Intro dispatch states the US ROM restructured
+        # around the sword (Module00_Intro_Dispatch, in title_screen.asm,
+        # points here instead of at JP's own copies). Intro_FadeLogoIn and
+        # Intro_TrianglesBeforeAttract are pulled unedited -- confirmed
+        # byte-for-byte identical to JP's own versions plus the sword calls
+        # already spliced in by the US ROM itself, nothing left to hand-edit.
+        # Intro_PopSubtitleCard gets 2 edits below. Deliberately last in this
+        # tuple: title_screen.asm's own hand-written content (LoadAllPalettes
+        # onward) used to start exactly here, so appending instead of
+        # inserting keeps this bank's layout, and the built ROM's bytes,
+        # unchanged.
+        "Intro_FadeLogoIn",
+        "Intro_PopSubtitleCard",
+        "Intro_TrianglesBeforeAttract",
     )
     # Intro_InitLogoSword has no RTS/RTL of its own: it falls straight through
     # into Intro_HandleLogoSword (both share the "pool Intro_HandleLogoSword"
@@ -1755,14 +1776,92 @@ def title_screen(sources: Sources) -> Relocation:
             # behind) -- a cross-bank JSL needs an RTL partner, not the
             # JSR-only RTS this routine ends in.
             block.return_long()
+        if name == "Intro_PopSubtitleCard":
+            # FadeMusicAndResetSRAMMirror stays behind in JP's own bank $0C
+            # (a shared routine, not pulled here), so US's same-bank JMP.w
+            # has to become a cross-bank JML now that this routine lives in
+            # bank $28. Growing 3 -> 4 bytes is safe: the whole relocation is
+            # freshly re-rendered at its own org, so every later line just
+            # shifts to match -- unlike a base-bank edit, nothing here has a
+            # fixed offset to preserve. instruction(), not a plain string,
+            # so the new line's size is actually recomputed (splice() treats
+            # a raw string as an unsized comment, not code).
+            block.splice(
+                "JMP.w FadeMusicAndResetSRAMMirror",
+                [instruction("JML FadeMusicAndResetSRAMMirror")],
+            )
+            # US's plain `INC.b $11` would advance to dispatch slot 8, which
+            # has to stay vanilla here (Attract_LoadNewScene and Save & Quit
+            # both enter with $11=8 -- see Module00_Intro_Dispatch's own
+            # comment) -- jump straight to slot 10 instead.
+            block.splice(
+                "INC.b $11", instructions(["LDA.b #$0A", "STA.b $11"])
+            )
         sword_lines += block.lines
     hand = Assembly.from_content(
         _resource_lines("title_screen.asm")
     ).ensure_anchors()
+
+    def triangle_tables() -> list[Line]:
+        """The 4 OAM object tables TitleScreenUS_DrawTriangle picks between,
+        pulled from the two US routines it merges instead of transcribed.
+        Emitted as plain sublabels of that hand-written routine (its own
+        enclosing scope), not as their own asar pool -- each pulled pool's
+        own ``pool``/``pool off`` directive lines are dropped so the tables
+        belong to the routine above them, exactly like the hand-transcribed
+        copies they replace did.
+        """
+        title = us.pool("AnimateSceneSprite_DrawTriangle", comments=False)
+        room = us.pool(
+            "AnimateSceneSprite_DrawTriforceRoomTriangle", comments=False
+        )
+        lines: list[Line] = []
+        for index, (source, sublabel, renamed) in enumerate(
+            (
+                (title, ".rightside_objects", None),
+                (title, ".leftside_objects", None),
+                # Renamed: the triforce-room routine names its own two
+                # tables identically, and both pairs share one scope here.
+                (room, ".rightside_objects", ".tf_rightside_objects"),
+                (room, ".leftside_objects", ".tf_leftside_objects"),
+            )
+        ):
+            piece = source.subblock(sublabel, comments=False)
+            if renamed is not None:
+                piece.rename_label(sublabel, renamed)
+            if index:
+                lines.append(note(""))
+            lines += [line for line in piece.lines if line.opcode != "pool"]
+        return lines
+
+    hand.splice(
+        "[PULLED] .rightside_objects",
+        triangle_tables(),
+        until="; Replaces Attract_Initialize",
+    )
+    # TitleScreenUS_AttractInitializePalettes's own body: not the whole US
+    # Attract_Initialize (its own comment above explains why -- the routine
+    # diverges again a little further in, past PaletteLoad_LinkArmorAnd
+    # Gloves, in a way this build deliberately keeps JP-sourced: JP loads
+    # attract-plaque MESSAGE 0110, US loads MESSAGE 0112, and this build
+    # keeps JP message IDs everywhere -- see text()'s CreateMessagePointers
+    # realignment), just this palette-loading prefix, sliced out of US's own
+    # routine instead of transcribed.
+    attract_initialize = us.block("Attract_Initialize", comments=False)
+    prefix_start = attract_initialize.find("JSL TransferAttractPlaques")
+    prefix_end = attract_initialize.find("JSL PaletteLoad_LinkArmorAndGloves")
+    hand.splice(
+        "[PULLED] US Attract_Initialize's own palette-loading prefix",
+        attract_initialize.lines[prefix_start:prefix_end],
+    )
     relocation = Relocation(
         hooked=(
-            "AnimateSceneSprite_DrawCopyright",
-            "AnimateSceneSprite_AddObjectsToOAMBuffer",
+            (
+                "AnimateSceneSprite_DrawCopyright",
+                "AnimateSceneSprite_AddObjectsToOAMBuffer",
+            )
+            if us_title_screen
+            else ()
         ),
         # AnimateSceneSprite_DrawCopyright is one of AddObjectsToOAMBuffer's
         # own callers, and it moved along in this same relocation -- telling
@@ -1776,6 +1875,7 @@ def title_screen(sources: Sources) -> Relocation:
             "AddObjectsToOAMBuffer moved to bank $28 for the longer US"
             " copyright text (--us-title-screen).",
         ),
+        changes=changes,
     )
     relocation.place(
         Assembly([*sword_lines, *hand.lines]),
@@ -1785,16 +1885,19 @@ def title_screen(sources: Sources) -> Relocation:
     return relocation
 
 
-def title_screen_graphics() -> Relocation:
+def title_screen_graphics(
+    *, changes: bool, us_title_screen: bool
+) -> Relocation:
     """Bank ``$29``: the US title-logo BG art (``GFX_40``/``GFX_41``) and the
     triforce+sword OBJ sheet (``GFX_7B``), for ``--us-title-screen``. Same
-    incbin-and-repoint shape as :func:`graphics`; the caller only includes
-    this relocation when the flag is on -- unlike ``graphics``'s sheets
-    (always repointed), ``_wire_hooks`` frees a hooked name from the base
-    whether or not the relocation's own pieces get built (``Relocation.
-    changes`` only controls the alias, not the free), so leaving this bank
-    out entirely is what keeps these sheets resolving to JP's own art -- via
-    their original, un-freed names -- when the flag is off.
+    incbin-and-repoint shape as :func:`graphics`, including its present-but-
+    inert baseline behavior: this bank's sheets are always built and placed,
+    every build -- unlike ``graphics``'s own sheets, which are unconditionally
+    hooked (``_wire_hooks`` frees a hooked name from the base regardless of
+    ``Relocation.changes``, which only controls the alias, not the free), the
+    ``hooked`` tuple here is itself conditional on ``us_title_screen``, so a
+    build without the flag never frees these JP sheet names at all and the
+    game keeps resolving them to JP's own art.
 
     Intro_InitializeDefaultGFX (bank $0C, shared/unedited) loads BG1's
     character memory once, at boot, by calling ``InitializeTilesets`` with
@@ -1870,7 +1973,9 @@ def title_screen_graphics() -> Relocation:
         )
         lines.append(note(""))
     relocation = Relocation(
-        hooked=tuple(name for name, _ in sheets), hook_notes=dead_notes
+        hooked=(tuple(name for name, _ in sheets) if us_title_screen else ()),
+        hook_notes=dead_notes,
+        changes=changes,
     )
     relocation.place(
         Assembly(lines[:-1]),
@@ -2570,9 +2675,11 @@ _MAIN_ANCHOR = 'incsrc "bank_1F.asm"'
 _MAIN_MARKER = 'incsrc "bank_20.asm"'
 # Inserted right after the last base-bank include: the graft-bank includes,
 # then the 2 MB padding + SNES header size byte the expansion needs (so the
-# checksum is a plain byte-sum every emulator agrees on). bank_28/bank_29
-# (the --us-title-screen sword code/graphics) are spliced in conditionally by
-# patch_main_asm -- every other graft bank is unconditional.
+# checksum is a plain byte-sum every emulator agrees on). Every graft bank is
+# unconditional here, including bank_28/bank_29 (the --us-title-screen sword
+# code/graphics) -- present-but-inert like the rest of the graft when the
+# flag is off (see title_screen()/title_screen_graphics()), not spliced in
+# conditionally.
 _MAIN_BLOCK_HEAD = (
     "",
     'incsrc "bank_20.asm"',  # our VWF font + relocated TransferFontToVRAM
@@ -2580,10 +2687,10 @@ _MAIN_BLOCK_HEAD = (
     'incsrc "bank_23.asm"',  # message data (overflow)
     'incsrc "bank_26.asm"',  # US menu/HUD + file-select font & bg graphics
     'incsrc "bank_27.asm"',  # file-select US palette overlay + palette data
-)
-_MAIN_BLOCK_US_TITLE_SCREEN = (
-    'incsrc "bank_28.asm"',  # --us-title-screen: sword animation
-    'incsrc "bank_29.asm"',  # --us-title-screen: logo/triforce/sword gfx
+    # --us-title-screen: sword animation; inert unless the flag is on.
+    'incsrc "bank_28.asm"',
+    # --us-title-screen: logo/triforce/sword gfx; also inert unless on.
+    'incsrc "bank_29.asm"',
 )
 _MAIN_BLOCK_TAIL = (
     'incsrc "bank_2C.asm"',  # file-select / copy / erase / name-entry
@@ -2602,8 +2709,7 @@ _MAIN_BLOCK_TAIL = (
     " everyone agrees on, so",
     "; --fix-checksum writes a value snes9x accepts. The gaps between the"
     " graft banks ($21, $24-$25,",
-    "; $28-$2B (unless --us-title-screen), $2F-$3F) are unused ($00 fill) --"
-    " valid LoROM space in a",
+    "; $2A-$2B, $2F-$3F) are unused ($00 fill) -- valid LoROM space in a",
     "; 2 MB ROM, free for future use.",
     "org $3FFFFF",
     "db $FF",
@@ -2617,7 +2723,7 @@ _MAIN_BLOCK_TAIL = (
 )
 
 
-def patch_main_asm(english: Rom, *, us_title_screen: bool = False) -> None:
+def patch_main_asm(english: Rom) -> None:
     """Wire the graft-bank includes + 2 MB padding into the entry ``main.asm``.
 
     Idempotent and located by the ``incsrc "bank_1F.asm"`` anchor, not a line
@@ -2643,11 +2749,7 @@ def patch_main_asm(english: Rom, *, us_title_screen: bool = False) -> None:
     if anchor is None:
         msg = f"main.asm: anchor {_MAIN_ANCHOR!r} not found"
         raise ValueError(msg)
-    block = (
-        *_MAIN_BLOCK_HEAD,
-        *(_MAIN_BLOCK_US_TITLE_SCREEN if us_title_screen else ()),
-        *_MAIN_BLOCK_TAIL,
-    )
+    block = (*_MAIN_BLOCK_HEAD, *_MAIN_BLOCK_TAIL)
     main.lines[anchor + 1 : anchor + 1] = [
         Line.from_line(text) for text in block
     ]
@@ -2705,12 +2807,13 @@ def build(
     (default) is JP 1.0's own bolder font, computed offline from the JP ROM;
     ``"us"`` instead pulls the same character set from the US dialogue font,
     so credits match the look of the rest of the (US-fonted) game -- see
-    :func:`credits_font_upload`. ``us_title_screen`` (also only meaningful
-    alongside ``changes``) swaps the (default JP-native) title-screen logo
-    for the US ROM's logo + animated sword, keeping JP 1.0's own
+    :func:`credits_font_upload`. ``us_title_screen`` (meaningful even without
+    ``changes``: its graft banks are always built, present-but-inert, like
+    :func:`graphics`'s -- see :func:`title_screen`/
+    :func:`title_screen_graphics`) swaps the (default JP-native) title-screen
+    logo for the US ROM's logo + animated sword, keeping JP 1.0's own
     press-to-skip timing (skippable as soon as the triforce forms, not
-    gated behind the sword animation like the real US ROM) -- see
-    :func:`title_screen`/:func:`title_screen_graphics`.
+    gated behind the sword animation like the real US ROM).
     """
     title_screen_on = us_title_screen and changes
     sources = Sources(
@@ -2740,9 +2843,13 @@ def build(
         ),
         graphics(changes=changes),
         file_select_palette(changes=changes),
+        title_screen(
+            sources, changes=changes, us_title_screen=us_title_screen
+        ),
+        title_screen_graphics(
+            changes=changes, us_title_screen=us_title_screen
+        ),
     ]
-    if title_screen_on:
-        relocations += [title_screen(sources), title_screen_graphics()]
     # Wire hooks first: it classifies each hook (alias vs pad) from the
     # pristine JP's callers and records the alias set the pieces then emit.
     if changes:
@@ -2760,7 +2867,7 @@ def build(
         )
         if intro_fix:
             apply_intro_fix(english)
-    patch_main_asm(english, us_title_screen=title_screen_on)
+    patch_main_asm(english)
     return english
 
 

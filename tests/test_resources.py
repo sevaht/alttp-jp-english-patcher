@@ -46,6 +46,29 @@ def test_usfs_palette_load_asm_is_bundled_and_parses() -> None:
     assert Assembly.from_content(lines).lines
 
 
+def test_title_screen_asm_is_bundled_and_parses() -> None:
+    lines = _resource_lines("title_screen.asm")
+    assert lines, "title_screen.asm resource is empty/missing"
+    text = "\n".join(lines)
+    # the genuinely hand-written pieces (everything else is pulled by name
+    # in title_screen(), see generate.py)
+    for label in (
+        "TitleScreenUS_DrawTriangle:",
+        "TitleScreenUS_LoadAllPalettes:",
+        "TitleScreenUS_AttractInitializePalettes:",
+        "Module00_Intro_Dispatch:",
+    ):
+        assert label in text
+    # splice markers title_screen() locates by substring -- a silent rename
+    # here should fail a test, not surface only at deploy time
+    for marker in (
+        "[PULLED] .rightside_objects",
+        "[PULLED] US Attract_Initialize's own palette-loading prefix",
+    ):
+        assert marker in text
+    assert Assembly.from_content(lines).lines
+
+
 def test_reference_hashes_resource_covers_every_base_bank() -> None:
     text = _reference_text()
     for bank in BASE_BANKS:
