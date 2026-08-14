@@ -526,6 +526,18 @@ def credits_font_upload(
         )
         raise ValueError(msg)
     credits_init_resume = credits_init_polyhedral_call + 4
+    # Credits_InitializePolyhedral's own premature STA.b $13 -- see
+    # EN_CreditsInitPolyhedral_SkipPrematureUnblank below for why this is
+    # skipped rather than raced against (again).
+    polyhedral_premature_write = (
+        jp.block("Credits_InitializePolyhedral").line("STA.b $13").address
+    )
+    if polyhedral_premature_write is None:
+        msg = (
+            "Credits_InitializePolyhedral: STA.b $13 is not a"
+            " live-anchored instruction"
+        )
+        raise ValueError(msg)
     # EN_CreditsFont_ClearAttributionTilemap's own DMA fill body, pulled
     # (not hand-written) from EraseTilemaps_bg3's own BG3-fill pass
     # (bank_00) -- see the long comment where it's placed below.
@@ -631,79 +643,82 @@ def credits_font_upload(
     relocation.place(
         Assembly.from_content(
             [
-                "; [ENG-CREDITS-FONT] Stands in for JP's own DecompressFontGFX"
-                " call at credits' two font-load sites (Credits_LoadOverworld"
-                "Scene_PrepGFX/Credits_InitializeTheActualCredits) -- not the",
-                "; real (permanently no-op, everywhere else in this build)"
-                " decompression, and not a byte-neutral in-place edit"
-                " either, but a deliberate wait. Removing this once (as a",
-                "; cleanup pass, on the theory that EN_CreditsFont_"
-                "ClearAttributionTilemap's real fix made it redundant) was"
-                " wrong: confirmed live via a long Lua VRAM trace that",
-                "; without it, Credits_LoadCoolBackground's own"
-                " InitializeTilesets call (a CPU-driven, not DMA, VRAM copy"
-                " loop -- interruptible by NMI mid-transfer, unlike a DMA)",
-                "; corrupts the just-uploaded credits font at VRAM $E000"
-                " starting partway through its run -- byte-identical to the"
-                " correct asset for the first ~40 frames, then wrong for the",
-                "; rest of the credits, confirmed both by a whole-buffer diff"
-                " and, more precisely, a diff restricted to only the glyph"
-                " slots credits actually displays (matches perfectly in",
-                "; vanilla JP 1.0's own trace, the entire time -- this really"
-                " is build-specific, not a pre-existing issue). Restoring"
-                " this wait's ~2.7-frame real-time cost avoids it, the same",
-                "; way DecompressFontGFX's real (removed) decompression cost"
-                " always avoided it in vanilla -- both are timing padding"
-                " between the font upload and Credits_LoadCoolBackground's",
-                "; own VRAM writes, not (as first assumed) about"
-                " Credits_AddNextAttribution's queued write landing before"
-                " unblank -- see EN_CreditsFont_ClearAttributionTilemap",
-                "; below for why that assumption doesn't actually hold up:"
-                " NOT a wait on FRAME ($1A, WRAM $7E001A): its own"
-                ' symbol-table comment says it plainly ("incremented every',
-                '; time the main loop runs") -- it is a main-loop-driven'
-                " counter, not an NMI-driven one, so it can never change"
-                " while this very routine (itself running as part of that",
-                "; same main-loop iteration) is still on the call stack"
-                " waiting for it -- confirmed live, the first version of"
-                " this fix (polling FRAME) hung forever on a permanently",
-                "; forced-blank black screen. NMI fires as a hardware"
-                " interrupt regardless of what the main thread's own"
-                " instruction stream is doing (nothing here disables",
-                "; interrupts), so a plain cycle count -- no WRAM reads, no"
-                " dependency on any flag the main thread itself has to set --"
-                " correctly lets NMI preempt this wait on schedule, same as",
-                "; it always could have during vanilla's real decompression"
-                " work. X isn't saved/restored: neither call site's own"
-                " surrounding code depends on it surviving this call (both",
-                "; already route X through several real, substantial JSLs --"
-                " EraseTilemaps_bg3, DecompressAnimatedOverworldTiles,"
-                " InitializeTilesets, etc. -- between the last place either",
-                "; sets it and this call, so it's already effectively"
-                " clobbered by the time execution reaches here regardless of"
-                " what this routine does) -- and PHX/PLX would need to",
-                "; bracket REP #$10 on both sides to push/pull the same"
-                " width, an easy way to silently corrupt the stack by"
-                " exactly the bytes REP #$10 changes X's width by (confirmed",
-                "; live: an earlier version of this fix pushed X before REP"
-                " #$10 but pulled it after, a 1-byte stack imbalance that"
-                " sent RTL to a garbage address -- corrupted video/audio,",
-                "; not just a wrong screen). PHP/PLP alone need no such"
-                " bracketing: they always move exactly 1 byte, regardless of"
-                " any register-width flag.",
-                "CreditsFont_WaitForFlush:",
-                "PHP",
-                "REP #$10",
-                "LDX.w #$8000",
-                ".wait",
-                "DEX",
-                "BNE .wait",
-                "PLP",
-                "RTL",
+                "; [ENG-CREDITS-FONT] Credits_InitializeTheActualCredits does"
+                " its own JSL TransferFontToVRAM *before* JSL Credits_"
+                "LoadCoolBackground -- the unsafe order: InitializeTilesets",
+                "; (Credits_LoadCoolBackground's own call, a CPU-driven, not"
+                " DMA, VRAM copy loop -- interruptible by NMI mid-transfer,"
+                " unlike a DMA) then corrupts the just-uploaded font at VRAM",
+                "; $E000, confirmed live via a long Lua VRAM trace (byte-"
+                "correct for ~40 frames, then wrong for the rest of the"
+                " credits; a same-length vanilla JP 1.0 trace showed zero",
+                "; corruption the entire run, so this really is build-"
+                "specific timing, not a pre-existing issue). A fixed-cycle"
+                " busy-wait here (tried first) papered over it by luck of",
+                "; how much real time it happened to add, the same way"
+                " DecompressFontGFX's real (removed) decompression cost"
+                " always happened to in vanilla -- both are just timing",
+                "; padding for an ordering that's wrong regardless of how"
+                " much padding it gets. Credits_LoadOverworldScene_PrepGFX"
+                " (bank_02, credits' other font-load site) already does",
+                "; this the safe way -- its own InitializeTilesets call"
+                " runs *before* its font upload, not after, so the upload"
+                " is the last VRAM-graphics write in that routine, not the",
+                "; first -- no padding of any kind needed there. This"
+                " matches that same safe order instead of padding around"
+                " the unsafe one: skip Credits_InitializeTheActualCredits's",
+                "; own JSL TransferFontToVRAM call site entirely (nothing to"
+                " reorder around here -- it's simply dead now) and reproduce"
+                " the very next instruction, its own JSL Credits_",
+                "; LoadCoolBackground (untouched, still reachable in place,"
+                " but only via this copy now, not the original flow) --"
+                " EN_CreditsFont_ClearAttributionTilemap (below) does the",
+                "; real upload itself, now running after Credits_"
+                "LoadCoolBackground instead of before it.",
+                "CreditsFont_SkipOldUploadSite:",
+                "JSL Credits_LoadCoolBackground",
+                f"JML ${credits_init_polyhedral_call:06X}",
             ]
         ).ensure_anchors(),
         0x20B030,
-        "Credits' font-load wait (--credits-font, both values).",
+        "Credits_InitializeTheActualCredits: skip the old (unsafe-order)"
+        " font upload call site.",
+    )
+    relocation.place(
+        Assembly.from_content(
+            [
+                "; [ENG-CREDITS-FONT] Credits_InitializePolyhedral's own"
+                " STA.b $13 (LDA.b #$0F/STA.b $13, jpdasm bank_0C) sets"
+                " full brightness/force-blank-off immediately, at its own",
+                "; tail -- but in the normal flow it's always overwritten"
+                " by Credits_InitializeTheActualCredits's own later STZ.b"
+                " $13 before it ever matters (Credits_BrightenTriangles,",
+                "; the very next module state, ramps brightness up from 0"
+                " on its own regardless of what Polyhedral wrote here)."
+                " Reordering the font upload (EN_CreditsFont_",
+                "; ClearAttributionTilemap) and adding the VRAM clear both"
+                " made sure that *if* an NMI catches this premature write"
+                " before the later STZ.b $13, nothing garbage-looking is",
+                "; exposed -- but confirmed live, a real (not garbage,"
+                " just visibly wrong) 1-frame flash to full brightness"
+                " still happens, because the write itself still reaches",
+                "; hardware. Since it's provably never needed (always"
+                " clobbered before it would otherwise matter), skip it"
+                " outright instead of racing it a third time -- $13 simply",
+                "; stays whatever Credits_InitializeTheActualCredits's own"
+                " EnableForceBlank already set it to ($80, force-blank on)"
+                " for the rest of Credits_InitializePolyhedral's own",
+                "; execution, until that later STZ.b $13 sets it correctly."
+                " Reproduces the displaced INC.b $11, then rejoins right"
+                " after it (RTL) -- see the relocate_block call in",
+                "; apply_base_edits.",
+                "CreditsInitPolyhedral_SkipPrematureUnblank:",
+                "INC.b $11",
+                f"JML ${polyhedral_premature_write + 4:06X}",
+            ]
+        ).ensure_anchors(),
+        0x20B040,
+        "Credits_InitializePolyhedral: skip the premature INIDISP write.",
     )
     clear_attribution_tilemap_header = Assembly.from_content(
         [
@@ -716,63 +731,30 @@ def credits_font_upload(
             " $6800 onward is never synchronously cleared; the only",
             "; thing that ever writes there is"
             " Credits_AddNextAttribution's own queued write (staged in"
-            " WRAM, landed by the next NMI's DoNMIUpdates) -- a race"
-            " against STZ.b $13 (unblank) a few",
-            "; instructions later, not a guarantee -- but that alone"
-            " never actually mattered, in either vanilla or this build:"
-            " see the Credits_InitializePolyhedral paragraph below for",
-            "; the real, live-confirmed mechanism. A direct synchronous"
-            " DoNMIUpdates call (tried and reverted, before that was"
-            " found) was actively worse -- too broad a routine, gated",
-            "; on live-gameplay WRAM state not valid yet mid-setup, it"
-            " corrupted the background instead. This sidesteps the whole"
-            " question of when the queued write lands:",
-            "; synchronously clear $6800-$6FFF (2048 words -- BG2SC is set"
-            " to $12 a few instructions later, whose size field selects a"
-            " 32x64 map, i.e. this whole 2048-word span) with"
-            " EN_CreditsBlankFillTile's own tilemap word -- the same",
-            "; value Credits_AddNextAttribution itself already writes to"
-            " blank a line, so a pre-cleared line and a genuinely-blank"
-            " one are pixel-for-pixel identical.",
-            "; This has to run *before* the JSL"
-            " Credits_InitializePolyhedral it replaces, not after it (an"
-            " earlier version of this fix ran after, at the routine's",
-            "; own STZ.b $13/LDX.b #$04, and still flashed):"
-            " Credits_InitializePolyhedral sets $13 (the INIDISP mirror)"
-            " to $0F -- full brightness, force-blank off -- immediately,",
-            "; at its own tail, well before"
-            " Credits_InitializeTheActualCredits's later STZ.b $13 puts"
-            " it back to 0. A Lua write-trace on INIDISP confirmed live",
-            "; that this premature $0F genuinely lands on hardware for"
-            " several consecutive frames (JSL SaveGameFile, called"
-            " between Credits_InitializePolyhedral and the later",
-            "; STZ.b $13, is slow enough to span multiple NMIs on its"
-            " own) -- exactly the garbage-at-full-brightness flash"
-            " reported live, unrelated to how fast the queued",
-            "; attribution write lands. Clearing here, before that"
-            " premature brightness-up even happens, means there is"
-            " nothing left to expose no matter how many frames",
-            "; Credits_InitializePolyhedral's own $13=$0F survives."
-            " This race exists in vanilla JP 1.0 too (Credits_"
-            "InitializePolyhedral's own $13=$0F write is untouched",
-            "; base-game code) but vanilla never shows it: DecompressFont"
-            "GFX's real decompression work sits entirely *before*"
-            " Credits_InitializePolyhedral in the instruction stream, so",
-            "; removing it (a no-op everywhere in this build) shortened"
-            " how long the routine runs before reaching"
-            " Credits_InitializePolyhedral's own $13=$0F write, shifting",
-            "; which phase of the fixed 60Hz NMI cycle that write lands"
-            " on. JSL SaveGameFile and everything else between it and"
-            " the later STZ.b $13 (unchanged base-game code either way)",
-            "; then either fits entirely within that same NMI period"
-            " (vanilla's phase) or spills across one or more frame"
-            " boundaries (this build's shifted phase, before this fix)",
-            "; -- a latent race in JP's own original code that happened"
-            " to never get exposed until this build's timing shifted it."
-            " Reproduces the displaced JSL",
-            "; Credits_InitializePolyhedral itself, then rejoins right"
-            " after it -- see the relocate_block call in"
-            " apply_base_edits.",
+            " WRAM, landed by the next NMI's DoNMIUpdates), landing"
+            " whenever the next NMI happens to flush it, not synchronously.",
+            "; This clears it up front instead of leaving that gap:"
+            " EN_CreditsBlankFillTile's own tilemap word (the same value"
+            " Credits_AddNextAttribution itself already writes to blank a",
+            "; line, so a pre-cleared line and a genuinely-blank one are"
+            " pixel-for-pixel identical) across the whole 2048-word span"
+            " (BG2SC is set to $12 a few instructions later, whose size",
+            "; field selects a 32x64 map). Hooked in here, right before the"
+            " JSL Credits_InitializePolyhedral it replaces, mainly so the"
+            " font upload (below) and this clear both land well before",
+            "; anything could possibly display -- defense in depth,"
+            " alongside EN_CreditsInitPolyhedral_SkipPrematureUnblank"
+            " (credits_font_upload, bank $20) actually preventing",
+            "; Credits_InitializePolyhedral's own STA.b $13 from ever"
+            " reaching hardware early to begin with (that write, not this"
+            " region staying stale, turned out to be the real cause of the",
+            "; transition-into-credits garbage flash -- a direct synchronous"
+            " DoNMIUpdates call, tried first and reverted, was actively"
+            " worse: too broad a routine, gated on live-gameplay WRAM state",
+            "; not valid yet mid-setup, it corrupted the background"
+            " instead). Reproduces the displaced JSL Credits_"
+            "InitializePolyhedral itself, then rejoins right after it --",
+            "; see the relocate_block call in apply_base_edits.",
             "; The DMA fill body below (STA.b $00 through the second"
             " STY.w MDMAEN) is not hand-written -- it's"
             " EraseTilemaps_bg3's own BG3-fill pass (bank_00), pulled",
@@ -789,8 +771,21 @@ def credits_font_upload(
             "; 8-bit throughout, untouched) -- all of it comes from bytes"
             " that already assemble and already run correctly in the base"
             " game, not re-derived by hand.",
+            "; The font upload (JSL EN_TransferFontToVRAM_Credits) happens"
+            " here too now, first thing -- see EN_CreditsFont_"
+            "SkipOldUploadSite above for why: Credits_InitializeTheActual",
+            "; Credits's own font-load site used to run this before"
+            " Credits_LoadCoolBackground, an unsafe order; this reorders it"
+            " to run after, matching Credits_LoadOverworldScene_PrepGFX's",
+            "; own already-safe order. TransferFontToVRAM manages its own"
+            " register widths internally (ends SEP #$30) regardless of what"
+            " it's called with, so its position relative to the PHP/REP",
+            "; #$20 pair below doesn't matter -- placed first simply"
+            ' because "load the font" reads better before "clear the text'
+            ' area" than after.',
             "CreditsFont_ClearAttributionTilemap:",
             "PHP",
+            "JSL EN_TransferFontToVRAM_Credits",
             "REP #$20",
         ]
     ).ensure_anchors()
@@ -2481,38 +2476,38 @@ def apply_base_edits(
     # loads) is unaffected and keeps the usual English hooks.
     #
     # DecompressFontGFX itself is a no-op everywhere in this build (real
-    # decompression is never needed again -- see credits_font_upload's own
-    # EN_CreditsFont_WaitForFlush for why these two call sites don't just
-    # fall through to that same bare no-op like every other caller does):
-    # removing DecompressFontGFX's real work here also removes real time
-    # that, in vanilla, sat between the font upload (JSL TransferFontToVRAM,
-    # right after) and Credits_LoadCoolBackground's own InitializeTilesets
-    # VRAM writes a little further down -- a CPU-driven, not DMA, copy loop
-    # that's interruptible by NMI mid-transfer. Confirmed live via a long
-    # Lua VRAM trace: without that padding, InitializeTilesets ends up
-    # corrupting the just-uploaded credits font at VRAM $E000 partway
-    # through its own run (byte-correct for ~40 frames, then wrong for the
-    # rest of the credits) -- confirmed both via a whole-buffer diff and,
-    # more precisely, a diff restricted to only the glyph slots credits
-    # actually displays; vanilla JP 1.0's own trace matches the expected
-    # asset at those slots for the entire run, so this really is
-    # build-specific timing, not a pre-existing issue.
-    # EN_CreditsFont_WaitForFlush buys that margin back.
-    font_load_callers = (
-        "Credits_LoadOverworldScene_PrepGFX",
-        "Credits_InitializeTheActualCredits",
+    # decompression is never needed again) -- both credits font-load sites
+    # just fall through to that same bare no-op like every other caller,
+    # same as everywhere else. Credits_LoadOverworldScene_PrepGFX (bank_02)
+    # already calls InitializeTilesets *before* its own font upload, the
+    # safe order (see EN_CreditsFont_ClearAttributionTilemap, credits_font_
+    # upload, for why order matters here at all) -- only its
+    # TransferFontToVRAM call needs redirecting to our own asset-backed
+    # copy.
+    english.rewrite_reference(
+        _address_of_line(
+            english,
+            "Credits_LoadOverworldScene_PrepGFX",
+            "JSL TransferFontToVRAM",
+        ),
+        "TransferFontToVRAM",
+        "EN_TransferFontToVRAM_Credits",
     )
-    for caller in font_load_callers:
-        english.rewrite_reference(
-            _address_of_line(english, caller, "JSL TransferFontToVRAM"),
-            "TransferFontToVRAM",
-            "EN_TransferFontToVRAM_Credits",
-        )
-        english.rewrite_reference(
-            _address_of_line(english, caller, "JSL DecompressFontGFX"),
-            "DecompressFontGFX",
-            "EN_CreditsFont_WaitForFlush",
-        )
+    # Credits_InitializeTheActualCredits does it the *unsafe* way (font
+    # upload, then Credits_LoadCoolBackground's own InitializeTilesets) --
+    # see EN_CreditsFont_SkipOldUploadSite (credits_font_upload, bank $20)
+    # for the fix: skip this call site entirely rather than pad around the
+    # bad order with a wait. The real upload now happens inside
+    # EN_CreditsFont_ClearAttributionTilemap instead, which already runs
+    # after Credits_LoadCoolBackground.
+    old_font_upload_call = _address_of_line(
+        english, "Credits_InitializeTheActualCredits", "JSL TransferFontToVRAM"
+    )
+    english.relocate_block(
+        old_font_upload_call,
+        "EN_CreditsFont_SkipOldUploadSite",
+        resume=old_font_upload_call + 4,
+    )
     # See EN_CreditsFont_ClearAttributionTilemap (credits_font_upload, bank
     # $20) for why this is needed, and why it hooks in *before* JSL
     # Credits_InitializePolyhedral specifically (not later, at STZ.b $13 --
@@ -2530,10 +2525,24 @@ def apply_base_edits(
         resume=credits_init_polyhedral_call + 4,
         comment=(
             "; [ENG-CREDITS-FONT] Credits_InitializeTheActualCredits -> "
-            "clear VRAM $6800-$6FFF before Credits_InitializePolyhedral's "
-            "own premature unblank (fixes the transition-into-credits "
-            "garbage flash).",
+            "upload the font, then clear VRAM $6800-$6FFF, before "
+            "Credits_InitializePolyhedral's own premature unblank (fixes "
+            "the transition-into-credits garbage flash).",
         ),
+    )
+    # See EN_CreditsInitPolyhedral_SkipPrematureUnblank (credits_font_
+    # upload, bank $20): the VRAM clear above only makes sure nothing
+    # garbage-looking is exposed *if* Credits_InitializePolyhedral's own
+    # premature $13 write reaches hardware -- confirmed live it still can,
+    # a real (visibly wrong, if no longer garbage) 1-frame flash to full
+    # brightness. Skips that write outright instead.
+    polyhedral_premature_write = _address_of_line(
+        english, "Credits_InitializePolyhedral", "STA.b $13"
+    )
+    english.relocate_block(
+        polyhedral_premature_write,
+        "EN_CreditsInitPolyhedral_SkipPrematureUnblank",
+        resume=polyhedral_premature_write + 4,
     )
     # Real US's own Intro_InitializeMemory dispatch (usdasm bank_0C) has
     # eleven steps; JP's (this bank) has twelve, because JP splits US's
