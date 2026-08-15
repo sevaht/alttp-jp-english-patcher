@@ -269,12 +269,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "the rest of the (US-fonted) game's look",
     )
     parser.add_argument(
-        "--us-title-screen",
-        action="store_true",
-        help="swap the (default JP-native) title screen for the US ROM's "
-        "logo and animated sword; keeps JP 1.0's own skip timing, so a "
-        "button press skips it immediately (as soon as the triforce forms) "
-        "instead of the real US ROM's wait for the sword animation to finish",
+        "--title-screen",
+        choices=("us", "jp"),
+        default="us",
+        help="which title screen to use: 'us' (default) swaps in the US "
+        "ROM's logo and animated sword, keeping JP 1.0's own skip timing "
+        "(a button press skips it immediately, as soon as the triforce "
+        "forms, instead of the real US ROM's wait for the sword animation "
+        "to finish); 'jp' keeps JP 1.0's own title screen instead",
     )
     parser.add_argument(
         "--usdasm", type=Path, help="US disassembly checkout (default: cached)"
@@ -333,7 +335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         epilepsy_fix=not args.no_epilepsy_fix,
         keep_jp_credits=args.keep_jp_credits,
         credits_font=args.credits_font,
-        us_title_screen=args.us_title_screen,
+        us_title_screen=args.title_screen == "us",
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,
     )

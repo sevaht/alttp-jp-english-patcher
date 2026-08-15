@@ -1268,7 +1268,7 @@ def file_select(
     changes: bool,
     null_padbyte_threshold: int,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
-    us_title_screen: bool = False,
+    us_title_screen: bool = True,
 ) -> Relocation:
     """Bank ``$2C``: the US file-select / copy / erase / name-entry. Pulled
     whole by recursion from the entry points; a few come from JP for the
@@ -1281,9 +1281,9 @@ def file_select(
     title screen, not file-select: it is module 0's slot in the per-module
     tilemap-rebuild table this bank's other tilemap entries (``FileSelect
     Tilemap`` and siblings) belong to, so something has to fill it regardless.
-    JP by default (the title screen stays JP-native); with
-    ``us_title_screen``, the US version instead, matching the US logo/sword
-    art :func:`title_screen_graphics` repoints ``GFX_40``/``GFX_41`` at.
+    US by default (matching the US logo/sword art :func:`title_screen_
+    graphics` repoints ``GFX_40``/``GFX_41`` at); with ``us_title_screen``
+    off (``--title-screen jp``), the JP-native version instead.
     """
     us, jp = sources.us, sources.jp
     # The entry points -- every symbol un-relocated code reaches this subsystem
@@ -1845,14 +1845,14 @@ def file_select_palette(*, changes: bool) -> Relocation:
 def title_screen(
     sources: Sources, *, changes: bool, us_title_screen: bool
 ) -> Relocation:
-    """Bank ``$28``: the US title-screen sword animation, for
-    ``--us-title-screen``. Same present-but-inert shape as :func:`graphics`:
-    this bank's content is always built and placed, in every build
-    (including ``--baseline``) -- only ``hooked`` (and so the base-bank
-    landing pad and every alias) is conditional on ``us_title_screen``, so a
-    build without the flag leaves the base pointing at JP's own title screen
-    untouched, same as :func:`title_screen_graphics` already does for its
-    sheets.
+    """Bank ``$28``: the US title-screen sword animation -- on by default
+    (``--title-screen jp`` opts out). Same present-but-inert shape as
+    :func:`graphics`: this bank's content is always built and placed, in
+    every build (including ``--baseline``) -- only ``hooked`` (and so the
+    base-bank landing pad and every alias) is conditional on
+    ``us_title_screen``, so a build with the flag off leaves the base
+    pointing at JP's own title screen untouched, same as
+    :func:`title_screen_graphics` already does for its sheets.
 
     ``Intro_SwordStab`` (the US-only dispatch state) and everything it reaches
     -- ``Intro_InitLogoSword``/``Intro_HandleLogoSword`` and the three
@@ -2136,14 +2136,197 @@ def title_screen(
         pad_header=(
             "; [ENG-TITLE] AnimateSceneSprite_DrawCopyright/"
             "AddObjectsToOAMBuffer moved to bank $28 for the longer US"
-            " copyright text (--us-title-screen).",
+            " copyright text (US title screen, the default).",
         ),
         changes=changes,
     )
     relocation.place(
         Assembly([*sword_lines, *hand.lines]),
         0x288000,
-        "US title-screen sword animation (--us-title-screen).",
+        "US title-screen sword animation (the default; --title-screen jp"
+        " opts out).",
+    )
+    return relocation
+
+
+def _local_label_address(block: Assembly, label: str) -> int:
+    """The live address ``label`` (a dotted sublabel) points at within
+    ``block`` -- a label-only line carries no anchor of its own, so this is
+    the address of the first live-anchored line at/after its declaration."""
+    for index, line in enumerate(block.lines):
+        if line.label == label:
+            for later in block.lines[index:]:
+                if later.address is not None:
+                    return later.address
+            break
+    msg = f"{label!r} is not a resolvable local label in this block"
+    raise ValueError(msg)
+
+
+def attract_text_timing_fix(sources: Sources, *, changes: bool) -> Relocation:
+    """Bank ``$20`` (free space): widens the attract mode's fixed on-screen
+    durations for its four auto-scrolling story captions -- the "Long ago,
+    in the beautiful kingdom of Hyrule..." intro and the throne-room/prison/
+    altar dungeon captions -- to the US ROM's own values, not JP 1.0's.
+
+    Each caption's screen time is a plain WRAM countdown that fades the
+    scene out on its own schedule, unrelated to the message's own pacing
+    bytes (``set scroll speed``/``wait`` op-codes, ``text.asm``) -- this
+    build's ``CreateMessagePointers`` realignment (:func:`text`) already
+    carries those over untouched, keeping JP's message *IDs* while grafting
+    in the English *content* behind them (offset by the 2 US-only Choose2
+    High prompts JP lacks -- JP ID N holds the content at US ID N+2, e.g.
+    JP $0111/``AttractScene_ThroneRoom`` holds US $0113, "...Agahnim came to
+    Hyrule to release the seal. He eliminated the good King of Hyrule..."
+    -- confirmed against the JP 1.0 disassembly's own gloss for Message_0111,
+    which names him by his Japanese transliteration, アグニム). JP 1.0 sized
+    each countdown for its own short, kanji-dense text; with the much longer
+    English translation now living behind those same IDs, the countdown --
+    and so the scene -- ends before the text finishes scrolling in,
+    confirmed live. The US ROM hits the identical problem in reverse (its
+    own longer English text against the same JP-authored code shape) and
+    fixes it the same way: bigger duration values, pulled here verbatim
+    from its own ROM, not re-derived.
+
+    The intro caption's own counter (``$0200``, ``AttractDramatize_
+    PolkaDots``) is already 16-bit in JP 1.0, so only its value needs
+    raising (a plain, byte-neutral ``set_operand`` in ``apply_base_edits``,
+    no relocation needed). The three dungeon captions share one 8-bit
+    counter (``$64``) sized for JP's largest value (208, fits a byte); the
+    US ROM's largest (576) does not, so US widens every read/write of it to
+    16-bit too -- ``AttractText_DungeonSceneCountdown`` (below) replaces the
+    shared decrement in ``Attract_DoTextInDungeonScene``, and each dungeon
+    scene gets its own widened init (``AttractText_*Duration``) and widened
+    consumer check (``AttractText_*Check``) -- seven small relocations
+    total, each an exact-fit ``JML`` (no orphan bytes) with the original
+    JP 1.0 instructions confirmed byte-for-byte identical to the US ROM's
+    once REP/SEP-widened, aside from the duration values themselves.
+    """
+    jp = sources.jp
+
+    def block_address(name: str, needle: str) -> int:
+        address = jp.block(name).line(needle).address
+        if address is None:
+            msg = f"{name}: {needle!r} is not a live-anchored instruction"
+            raise ValueError(msg)
+        return address
+
+    def duration_stub(label: str, block: str, new_value: str) -> Assembly:
+        sta = block_address(block, "STA.b $64")
+        resume = sta + 2
+        return Assembly.from_content(
+            [
+                f"{label}:",
+                "REP #$20",
+                f"LDA.w #{new_value}",
+                "STA.b $64",
+                "SEP #$20",
+                f"JML ${resume:06X}",
+            ]
+        ).ensure_anchors()
+
+    def check_stub(
+        label: str, block: str, branch: str, target_label: str
+    ) -> Assembly:
+        lda = block_address(block, "LDA.b $64")
+        resume = lda + 4
+        taken = _local_label_address(jp.block(block), target_label)
+        return Assembly.from_content(
+            [
+                f"{label}:",
+                "REP #$20",
+                "LDA.b $64",
+                "SEP #$20",
+                f"{branch} .taken",
+                f"JML ${resume:06X}",
+                ".taken",
+                f"JML ${taken:06X}",
+            ]
+        ).ensure_anchors()
+
+    relocation = Relocation(changes=changes)
+    relocation.place(
+        duration_stub(
+            "ThroneRoomDuration", "AttractScene_ThroneRoom", "$0210"
+        ),
+        0x20C000,
+        "AttractScene_ThroneRoom: widen the on-screen-duration counter to"
+        " the US ROM's own value (528 frames, was 192).",
+    )
+    relocation.place(
+        duration_stub("PrisonDuration", "AttractScene_Prison", "$0240"),
+        0x20C030,
+        "AttractScene_Prison: widen the on-screen-duration counter to the"
+        " US ROM's own value (576 frames, was 208).",
+    )
+    relocation.place(
+        duration_stub("AltarDuration", "AttractScene_AgahnimAltar", "$00C0"),
+        0x20C060,
+        "AttractScene_AgahnimAltar: widen the on-screen-duration counter's"
+        " storage to 16-bit (value unchanged, 192 frames) -- matches the"
+        " US ROM, and keeps it consistent with the shared 16-bit"
+        " countdown/checks below.",
+    )
+    dec_address = block_address("Attract_DoTextInDungeonScene", "DEC.b $64")
+    relocation.place(
+        Assembly.from_content(
+            [
+                "; [ENG-ATTRACT] Attract_DoTextInDungeonScene's own"
+                " shared decrement, widened to match the three dungeon"
+                " scenes' own now-16-bit $64 (see the *Duration stubs",
+                "; above) -- matches the US ROM. DEC.b $64 is done here,"
+                " under our own REP #$20, not by jumping back into JP"
+                " 1.0's original DEC.b $64: DEC (like LDA/STA) is",
+                "; width-sensitive, and the original instruction runs at"
+                " its own native 8-bit width regardless of what called"
+                " it, so jumping back into it would only decrement the",
+                "; low byte -- the high byte would never change, and the"
+                " 16-bit value would never actually reach 0 (confirmed"
+                " live: the scene hung indefinitely once the caption",
+                "; finished rendering, since RenderText's own pacing is"
+                " independent of this counter). The original instruction"
+                " is orphaned (dead, no longer jumped into) rather than",
+                "; reused. BEQ .skip skips the decrement once the"
+                " counter's already at 0 (avoiding underflow), same as"
+                " JP 1.0's original 8-bit check.",
+                "DungeonSceneCountdown:",
+                "REP #$20",
+                "LDA.b $64",
+                "BEQ .skip",
+                "DEC.b $64",
+                ".skip",
+                "SEP #$20",
+                f"JML ${dec_address + 2:06X}",
+            ]
+        ).ensure_anchors(),
+        0x20C090,
+        "Attract_DoTextInDungeonScene: widen the shared $64 decrement to"
+        " 16-bit.",
+    )
+    relocation.place(
+        check_stub(
+            "ThroneRoomCheck",
+            "AttractDramatize_ThroneRoom",
+            "BNE",
+            ".continue_dramatization",
+        ),
+        0x20C0C0,
+        "AttractDramatize_ThroneRoom: widen the $64 consumer check to"
+        " 16-bit.",
+    )
+    relocation.place(
+        check_stub(
+            "PrisonCheck", "Dramaghanim_MoveAndSpin", "BEQ", ".continue"
+        ),
+        0x20C0F0,
+        "Dramaghanim_MoveAndSpin (Prison): widen the $64 consumer check to"
+        " 16-bit.",
+    )
+    relocation.place(
+        check_stub("AltarCheck", "Dramagahnim_IdleGuiltily", "BNE", ".exit"),
+        0x20C120,
+        "Dramagahnim_IdleGuiltily (Agahnim's Altar): widen the $64 consumer"
+        " check to 16-bit.",
     )
     return relocation
 
@@ -2152,15 +2335,15 @@ def title_screen_graphics(
     *, changes: bool, us_title_screen: bool
 ) -> Relocation:
     """Bank ``$29``: the US title-logo BG art (``GFX_40``/``GFX_41``) and the
-    triforce+sword OBJ sheet (``GFX_7B``), for ``--us-title-screen``. Same
-    incbin-and-repoint shape as :func:`graphics`, including its present-but-
-    inert baseline behavior: this bank's sheets are always built and placed,
-    every build -- unlike ``graphics``'s own sheets, which are unconditionally
-    hooked (``_wire_hooks`` frees a hooked name from the base regardless of
-    ``Relocation.changes``, which only controls the alias, not the free), the
-    ``hooked`` tuple here is itself conditional on ``us_title_screen``, so a
-    build without the flag never frees these JP sheet names at all and the
-    game keeps resolving them to JP's own art.
+    triforce+sword OBJ sheet (``GFX_7B``) -- on by default (``--title-screen
+    jp`` opts out). Same incbin-and-repoint shape as :func:`graphics`,
+    including its present-but-inert baseline behavior: this bank's sheets are
+    always built and placed, every build -- unlike ``graphics``'s own sheets,
+    which are unconditionally hooked (``_wire_hooks`` frees a hooked name
+    from the base regardless of ``Relocation.changes``, which only controls
+    the alias, not the free), the ``hooked`` tuple here is itself conditional
+    on ``us_title_screen``, so a build with the flag off never frees these JP
+    sheet names at all and the game keeps resolving them to JP's own art.
 
     Intro_InitializeDefaultGFX (bank $0C, shared/unedited) loads BG1's
     character memory once, at boot, by calling ``InitializeTilesets`` with
@@ -2206,9 +2389,10 @@ def title_screen_graphics(
     $32 by JP's own numbering, and $0AA3 is written from many real-gameplay
     sites (room/area tileset loads) -- so some other, not yet identified JP
     room whose tileset is row $42 would show the US sword-sheet content
-    instead of its own real graphic under --us-title-screen. Accepted
-    knowingly: contained to an opt-in flag, and unswapped left the intro
-    with no sword sprite at all (the original, worse problem).
+    instead of its own real graphic with the (default) US title screen on.
+    Accepted knowingly: contained to a flag (``--title-screen jp`` opts
+    out), and unswapped left the intro with no sword sprite at all (the
+    original, worse problem).
     """
     sheets = (
         ("GFX_16", "us_gfx_16.3bppc"),  # US title-screen intro-tileset 1/4
@@ -2224,7 +2408,8 @@ def title_screen_graphics(
         name: (
             f"; [ENG-TITLE] JP intro-tileset sheet "
             f"${name.removeprefix('GFX_')} repointed at the US sheet",
-            f"; ({name}, usgfx.asm); only live with --us-title-screen.",
+            f"; ({name}, usgfx.asm); only live with the (default) US"
+            " title screen.",
         )
         for name, _ in sheets
     }
@@ -2243,7 +2428,8 @@ def title_screen_graphics(
     relocation.place(
         Assembly(lines[:-1]),
         0x298000,
-        "US title-screen graphics (--us-title-screen).",
+        "US title-screen graphics (the default; --title-screen jp opts"
+        " out).",
     )
     return relocation
 
@@ -2321,7 +2507,7 @@ def apply_base_edits(
     weathercock_fix: bool = True,
     keep_religious_imagery: bool = False,
     epilepsy_fix: bool = True,
-    us_title_screen: bool = False,
+    us_title_screen: bool = True,
 ) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
@@ -2618,7 +2804,8 @@ def apply_base_edits(
                 "; [ENG-TITLE] Module00_Intro's dispatch -> a grown copy "
                 "(bank $28, title_screen.asm) with the US-ified states",
                 "; spliced in and slot 8 left vanilla. "
-                "--us-title-screen only.",
+                "US title screen only (default; --title-screen jp opts"
+                " out).",
             ),
         )
         # SheetsTable_AA1 row $23 (bank $00, read by InitializeTilesets,
@@ -2688,7 +2875,8 @@ def apply_base_edits(
                 "; [ENG-TITLE] Intro_LoadAllPalettes_long -> the pulled US "
                 "Intro_LoadAllPalettes (bank $28, title_screen.asm);",
                 "; JP's own version loads different colors for the "
-                "sword-stab scene reveal. --us-title-screen only.",
+                "sword-stab scene reveal. US title screen only (default;",
+                "; --title-screen jp opts out).",
             ),
         )
         # relocate_block's replaced range runs from `address` up to (not
@@ -2896,7 +3084,8 @@ def apply_base_edits(
                 "subtype-aware replacement (bank $28, title_screen.asm);",
                 "; keeps the title screen at priority 1 without also "
                 "changing the triforce-room/credits scenes. "
-                "--us-title-screen only.",
+                "US title screen only (default; --title-screen jp opts"
+                " out).",
             ),
         )
         # Attract_Initialize (bank $0C): the real US ROM's own version
@@ -2920,9 +3109,60 @@ def apply_base_edits(
                 "$0AB3=4/PaletteLoad_OWBGMain call (bank $28,",
                 "; title_screen.asm); loads the attract background's own "
                 "colors instead of leaving the title screen's. "
-                "--us-title-screen only.",
+                "US title screen only (default; --title-screen jp opts"
+                " out).",
             ),
         )
+    # Attract mode's four auto-scrolling story captions -- see
+    # attract_text_timing_fix (bank $20) for why these need widening at all:
+    # JP 1.0 sized each one's on-screen duration for its own short text, and
+    # this build's much longer English translation (grafted in behind the
+    # same JP message IDs) now runs out of screen time before finishing.
+    # Byte-neutral -- LDX.w #imm16 either way -- so no relocation needed.
+    english.set_operand(
+        _address_of_line(english, "Attract_Initialize", "LDX.w #$0E9C"),
+        "LDX.w #$1010",
+        comment="[ENG-ATTRACT] intro caption's own duration -> the US"
+        " ROM's own value (4112 frames, was 3740).",
+    )
+    throne_room_duration = _address_of_line(
+        english, "AttractScene_ThroneRoom", "LDA.b #$C0"
+    )
+    english.relocate_block(
+        throne_room_duration,
+        "EN_ThroneRoomDuration",
+        resume=throne_room_duration + 4,
+    )
+    # ThroneRoom's own init falls straight through into the shared
+    # AttractScene_AdvanceFromDungeon (no JMP.w, unlike Prison/Altar below)
+    # -- its label sits exactly at the resume boundary, so relocate_block's
+    # line-slice sweeps the (unanchored) label declaration away along with
+    # the replaced span. Prison's and Altar's own untouched JMP.w
+    # AttractScene_AdvanceFromDungeon still need it, so it's restored here.
+    english.insert_before(
+        throne_room_duration + 4, ["AttractScene_AdvanceFromDungeon:"]
+    )
+    for block, needle, target in (
+        ("AttractScene_Prison", "LDA.b #$D0", "EN_PrisonDuration"),
+        ("AttractScene_AgahnimAltar", "LDA.b #$C0", "EN_AltarDuration"),
+    ):
+        address = _address_of_line(english, block, needle)
+        english.relocate_block(address, target, resume=address + 4)
+    dungeon_scene_countdown = _address_of_line(
+        english, "Attract_DoTextInDungeonScene", "LDA.b $64"
+    )
+    english.relocate_block(
+        dungeon_scene_countdown,
+        "EN_DungeonSceneCountdown",
+        resume=dungeon_scene_countdown + 4,
+    )
+    for block, target in (
+        ("AttractDramatize_ThroneRoom", "EN_ThroneRoomCheck"),
+        ("Dramaghanim_MoveAndSpin", "EN_PrisonCheck"),
+        ("Dramagahnim_IdleGuiltily", "EN_AltarCheck"),
+    ):
+        address = _address_of_line(english, block, "LDA.b $64")
+        english.relocate_block(address, target, resume=address + 4)
 
 
 def apply_intro_fix(english: Rom) -> None:
@@ -2996,10 +3236,10 @@ _MAIN_MARKER = 'incsrc "bank_20.asm"'
 # Inserted right after the last base-bank include: the graft-bank includes,
 # then the 2 MB padding + SNES header size byte the expansion needs (so the
 # checksum is a plain byte-sum every emulator agrees on). Every graft bank is
-# unconditional here, including bank_28/bank_29 (the --us-title-screen sword
-# code/graphics) -- present-but-inert like the rest of the graft when the
-# flag is off (see title_screen()/title_screen_graphics()), not spliced in
-# conditionally.
+# unconditional here, including bank_28/bank_29 (the US title-screen sword
+# code/graphics, on by default) -- present-but-inert like the rest of the
+# graft when --title-screen jp opts out (see title_screen()/title_screen_
+# graphics()), not spliced in conditionally.
 _MAIN_BLOCK_HEAD = (
     "",
     'incsrc "bank_20.asm"',  # our VWF font + relocated TransferFontToVRAM
@@ -3007,9 +3247,10 @@ _MAIN_BLOCK_HEAD = (
     'incsrc "bank_23.asm"',  # message data (overflow)
     'incsrc "bank_26.asm"',  # US menu/HUD + file-select font & bg graphics
     'incsrc "bank_27.asm"',  # file-select US palette overlay + palette data
-    # --us-title-screen: sword animation; inert unless the flag is on.
+    # Sword animation; on by default, inert if --title-screen jp opts out.
     'incsrc "bank_28.asm"',
-    # --us-title-screen: logo/triforce/sword gfx; also inert unless on.
+    # Logo/triforce/sword gfx; on by default, inert if --title-screen jp
+    # opts out.
     'incsrc "bank_29.asm"',
 )
 _MAIN_BLOCK_TAIL = (
@@ -3087,7 +3328,7 @@ def build(
     epilepsy_fix: bool = True,
     keep_jp_credits: bool = False,
     credits_font: str = "jp",
-    us_title_screen: bool = False,
+    us_title_screen: bool = True,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Rom:
@@ -3130,8 +3371,10 @@ def build(
     :func:`credits_font_upload`. ``us_title_screen`` (meaningful even without
     ``changes``: its graft banks are always built, present-but-inert, like
     :func:`graphics`'s -- see :func:`title_screen`/
-    :func:`title_screen_graphics`) swaps the (default JP-native) title-screen
-    logo for the US ROM's logo + animated sword, keeping JP 1.0's own
+    :func:`title_screen_graphics`) swaps the title-screen logo for the US
+    ROM's logo + animated sword, on by default (matching ``--title-screen
+    us``, the CLI default); ``False`` (``--title-screen jp``) keeps JP 1.0's
+    own title screen instead. Either way, the intro keeps JP 1.0's own
     press-to-skip timing (skippable as soon as the triforce forms, not
     gated behind the sword animation like the real US ROM).
     """
@@ -3153,6 +3396,7 @@ def build(
         credits_bank(
             sources, changes=changes, keep_jp_credits=keep_jp_credits
         ),
+        attract_text_timing_fix(sources, changes=changes),
         item_menu(sources, changes=changes),
         file_select(
             sources,

@@ -103,56 +103,56 @@ US_ASSETS: tuple[UsAsset, ...] = (
         (Slice(0x091D5B, 0x517),),
         "fc2697787500a0c950d51d3698d8e21f",
         "US title-screen intro-tileset sheet 1/4 (compressed slice;"
-        " $129D5B LoROM; --us-title-screen only)",
+        " $129D5B LoROM; US title screen only, the default)",
     ),
     UsAsset(
         "us_gfx_17.3bppc",
         (Slice(0x092272, 0x48C),),
         "169b7dcab583eb1435203fddd3d620e9",
         "US title-screen intro-tileset sheet 2/4 (compressed slice;"
-        " $12A272 LoROM; --us-title-screen only)",
+        " $12A272 LoROM; US title screen only, the default)",
     ),
     UsAsset(
         "us_gfx_1d.3bppc",
         (Slice(0x093840, 0x514),),
         "060c48c1126ec8a0b86770a80d9285fe",
         "US title-screen intro-tileset sheet 3/4 (compressed slice;"
-        " $12B840 LoROM; --us-title-screen only)",
+        " $12B840 LoROM; US title screen only, the default)",
     ),
     UsAsset(
         "us_gfx_1e.3bppc",
         (Slice(0x093D54, 0x475),),
         "a77cae817bd90efdb718fdfb78850b3c",
         "US title-screen intro-tileset sheet 4/4 (compressed slice;"
-        " $12BD54 LoROM; --us-title-screen only)",
+        " $12BD54 LoROM; US title screen only, the default)",
     ),
     UsAsset(
         "us_gfx_40.3bppc",
         (Slice(0x09E7AF, 0x536),),
         "ac3dd8110618c97b07cdbc3b404a12d5",
         "US title-logo BG art, sheet 1/2 (compressed slice; $13E7AF LoROM;"
-        " --us-title-screen only)",
+        " US title screen only, the default)",
     ),
     UsAsset(
         "us_gfx_41.3bppc",
         (Slice(0x09ECE5, 0x560),),
         "f7544b5fefc20df1a12f48594bb1a10c",
         "US title-logo BG art, sheet 2/2 (compressed slice; $13ECE5 LoROM;"
-        " --us-title-screen only)",
+        " US title screen only, the default)",
     ),
     UsAsset(
         "us_gfx_7b.3bpp",
         (Slice(0x08A000, 0x600),),
         "bacde442b8613ead71040b2d81496022",
         "US title-screen triforce+sword OBJ sheet (uncompressed slice;"
-        " $11A000 LoROM; --us-title-screen only)",
+        " $11A000 LoROM; US title screen only, the default)",
     ),
     UsAsset(
         "us_gfx_a5.3bppc",
         (Slice(0x0B3E6B, 0x2D2),),
         "179e92e6b88edd176a510ab2a7dce64e",
         "US sword-blade/hilt OBJ sheet, GFX_A5 (compressed slice; $16BE6B"
-        " LoROM; --us-title-screen only)",
+        " LoROM; US title screen only, the default)",
     ),
 )
 

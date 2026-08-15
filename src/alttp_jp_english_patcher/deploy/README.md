@@ -82,14 +82,27 @@ photosensitive-epilepsy-safety pass; this build applies that same reduction
 by default. Pass `--no-epilepsy-fix` when generating to keep JP 1.0's
 original (much brighter) flash intensity instead.
 
-### US-styled title screen
+### Attract-mode caption timing
+
+The attract-mode demo's four auto-scrolling story captions (the "Long ago,
+in the beautiful kingdom of Hyrule..." intro, and the throne-room/prison/
+altar dungeon captions) each stay on screen for a fixed duration before the
+scene fades out, sized in JP 1.0 for its own short, kanji-dense text. This
+build's English translation no longer fits in that time, so these durations
+are widened to the US ROM's own values (and, for the three dungeon
+captions, its wider counter) instead.
+
+### Title screen
 
 The US ROM's title screen plays a sword-reveal animation (the Triforce
 splits open and the Master Sword rises out of it) before settling into the
 logo; JP 1.0 skips straight to the logo without it. By default this build
-keeps JP 1.0's own title screen; pass `--us-title-screen` when generating
-to replace it with the US ROM's version instead, including its attract-mode
-background colors and title-logo/triforce OAM layering.
+uses the US ROM's version, including its attract-mode background colors
+and title-logo/triforce OAM layering (keeping JP 1.0's own press-to-skip
+timing -- a button press skips it as soon as the triforce forms, not
+gated behind the sword animation like the real US ROM). Pass
+`--title-screen jp` when generating to keep JP 1.0's own title screen
+instead.
 
 ---
 
@@ -110,7 +123,7 @@ python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
 
 On Windows, run `binextract.py`, then `_build.bat`. `make` also works on any
 platform with `asarmon` on `PATH`. All three produce `alttp-english.sfc`; a
-correct default build has MD5 `2162e6d28529b9e6c4b883264e0032ba`.
+correct default build has MD5 `7f923a32e2d0485e5ef47aaab08e2f08`.
 
 ## Binaries
 
