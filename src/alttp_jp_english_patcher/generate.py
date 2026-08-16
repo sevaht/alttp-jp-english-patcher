@@ -322,6 +322,28 @@ def text(
         ],
     )
 
+    # [ENG-TEXT] the discarded overflow above (the missing trailing border on
+    # "with", on that same "said, "Once..." line) is a symptom of that line's
+    # own drawn width landing 1px over the 168px-per-half budget -- the font's
+    # quote-mark glyph (`"`) declares an 8px advance width but its own ink
+    # (decoded from us_font.2bpp) only occupies columns 0-4, leaving 3 wholly
+    # blank trailing columns baked into the glyph itself. Trimming the last of
+    # those unused columns brings the line to exactly 168px, so the character
+    # that used to overflow now has real WRAM room to draw into and the
+    # border renders. `"` appears in exactly two messages in the whole
+    # game (grepped $4C across text.asm) -- this line, and one other
+    # (Agahnim's "the prophecy says, "The Hero...") whose quotes each sit
+    # alone at a scroll-segment boundary rather than flush against a line's
+    # own right edge, so they aren't relying on that trailing padding either.
+    # Message line breaks are all hardcoded by the data's own $75/$76/$73
+    # ops, not reflowed from character width, so this can't shift where any
+    # line wraps -- it only changes the per-line pixel total the overflow
+    # check above compares against. Confirmed live (Mesen trace, same line):
+    # "with"'s own trailing border now renders.
+    engine.replace(
+        "db   8,  7,  7,  7,  7,  4", "db   7,  7,  7,  7,  7,  4", 1
+    )
+
     # (2) message-ID realignment, done in the ENGINE instead of the data. The
     # US has two messages JP lacks -- the Choose2High cursor prompts at IDs
     # $0B/$0C -- so every later message's US ID is JP's + 2. Rather than
