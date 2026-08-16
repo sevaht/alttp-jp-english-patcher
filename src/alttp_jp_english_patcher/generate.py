@@ -324,24 +324,30 @@ def text(
 
     # [ENG-TEXT] the discarded overflow above (the missing trailing border on
     # "with", on that same "said, "Once..." line) is a symptom of that line's
-    # own drawn width landing 1px over the 168px-per-half budget -- the font's
+    # own drawn width landing over the 168px-per-half budget -- the font's
     # quote-mark glyph (`"`) declares an 8px advance width but its own ink
-    # (decoded from us_font.2bpp) only occupies columns 0-4, leaving 3 wholly
-    # blank trailing columns baked into the glyph itself. Trimming the last of
-    # those unused columns brings the line to exactly 168px, so the character
-    # that used to overflow now has real WRAM room to draw into and the
-    # border renders. `"` appears in exactly two messages in the whole
-    # game (grepped $4C across text.asm) -- this line, and one other
-    # (Agahnim's "the prophecy says, "The Hero...") whose quotes each sit
-    # alone at a scroll-segment boundary rather than flush against a line's
-    # own right edge, so they aren't relying on that trailing padding either.
-    # Message line breaks are all hardcoded by the data's own $75/$76/$73
-    # ops, not reflowed from character width, so this can't shift where any
-    # line wraps -- it only changes the per-line pixel total the overflow
-    # check above compares against. Confirmed live (Mesen trace, same line):
-    # "with"'s own trailing border now renders.
+    # (decoded from us_font.2bpp) only occupies columns 0-4. Every other
+    # glyph checked (period, comma, `O`) declares a width that fits its own
+    # ink exactly, zero slack; the quote is the one glyph in the font that
+    # doesn't follow that. Narrowing it to 6 -- its own ink width plus a
+    # single pixel of trailing space -- clears the overflow (brings the line
+    # to 167px) and leaves a small, deliberate gap between the open quote
+    # and the next word (visually compared live against the close quote a
+    # few lines later, "open."", which sits flush with zero gap against its
+    # own neighbor -- same glyph, same tile, no ink discarded either way,
+    # just one glyph carrying an extra pixel of its own declared width and
+    # the other not). `"` appears in exactly two messages in the whole game
+    # (grepped $4C across text.asm) -- this line, and one other (Agahnim's
+    # "the prophecy says, "The Hero...") whose quotes each sit alone at a
+    # scroll-segment boundary rather than flush against a line's own right
+    # edge, so they aren't relying on that trailing padding either. Message
+    # line breaks are all hardcoded by the data's own $75/$76/$73 ops, not
+    # reflowed from character width, so this can't shift where any line
+    # wraps -- it only changes the per-line pixel total the overflow check
+    # above compares against. Confirmed live (Mesen trace, same line):
+    # "with"'s own trailing border renders correctly.
     engine.replace(
-        "db   8,  7,  7,  7,  7,  4", "db   7,  7,  7,  7,  7,  4", 1
+        "db   8,  7,  7,  7,  7,  4", "db   6,  7,  7,  7,  7,  4", 1
     )
 
     # (2) message-ID realignment, done in the ENGINE instead of the data. The
