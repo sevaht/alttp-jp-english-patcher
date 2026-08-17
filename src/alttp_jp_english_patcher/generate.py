@@ -586,6 +586,129 @@ def font_upload(sources: Sources, *, changes: bool) -> Relocation:
     return relocation
 
 
+def hud_max_capacity_color(*, changes: bool) -> Relocation:
+    """Bank ``$29`` (free space): recolors the HUD bomb/arrow/rupee digit
+    counters to gold when the player is at maximum capacity (50 bombs, 70
+    arrows, 999 rupees), matching the GBA re-release.
+
+    Each hooks in right after ``UpdateHUDBuffer``'s own digit-drawing
+    (bank_0D) for that counter finishes -- so its digit tiles are already
+    written to the HUD buffer, each with palette 1 ($24xx) baked into its
+    high byte -- and conditionally EORs them with $1000 (the bit difference
+    between palette 1 and palette 5's attribute byte, $24 xor $34; see
+    ``apply_base_edits``'s ``PaletteData`` edit for why palette 5 -- an
+    otherwise-idle slot repointed to a matching red-outline/gold-fill
+    palette) when at max. All three compare the live count directly against
+    a fixed constant ($32/50 bombs, $46/70 arrows, $03E7/999 rupees) -- the
+    absolute, fully-upgraded cap, not the player's current capacity tier
+    (an earlier version compared bombs/arrows against ``CapacityUpgrades``
+    indexed by the player's own upgrade count, which is wrong here: that
+    reads as "matches whatever cap you currently have", turning gold at a
+    half-upgraded max instead of only the true 50/70 -- the same table the
+    bomb/arrow-refill code (also bank_0D) uses, but for a different
+    question than this one). 999 for rupees is the same hardcoded cap the
+    rupee-fill code (bank_0D) already clamps both the real and displayed
+    rupee count to -- rupees have no tiered capacity, so this one was
+    always a fixed-constant compare. Doing the recolor post-hoc, on the
+    already-drawn tiles, rather than diverting the draw itself needs no
+    call back into bank_0D's ``HexToDec`` -- a same-bank-only routine (it
+    returns via RTS, not RTL) that would otherwise force this code to live
+    in bank_0D itself, where there's no free space this size.
+
+    An earlier version of this reused palette 2 (the existing magic-gauge
+    gold, already loaded every frame) instead of touching any palette data
+    -- zero risk, but visually too subtle to notice in play: palette 2
+    pairs its gold with the *same white fill* every other digit already
+    uses, so only the thin outline changed color. Confirmed working
+    correctly the whole time via live pixel sampling (WRAM/VRAM/CGRAM all
+    correct) before that was diagnosed as a design mismatch, not a bug --
+    the fill itself needs to turn gold, which means owning a palette slot.
+    """
+    relocation = Relocation(changes=changes)
+    relocation.place(
+        Assembly.from_content(
+            [
+                "; [ENG-HUD] UpdateHUDBuffer (bank_0D) always draws the",
+                "; bomb/arrow HUD digits with palette 1 ($24xx, white fill)",
+                "; -- this recolors them to palette 5 ($34xx, gold fill,",
+                "; same red outline) when at the absolute max (50/70, all",
+                "; capacity upgrades -- NOT just the player's current tier),",
+                "; matching the GBA re-release's yellow-at-max counters (see",
+                "; PaletteData's edit in apply_base_edits for the palette",
+                "; itself). Hooked in at UpdateHUDBuffer's very last",
+                "; Arrows-digit store (bank_0D), replayed here, by which",
+                "; point all 4 digit tiles (bomb tens/ones, arrow",
+                "; tens/ones) are already sitting in the HUD buffer.",
+                "HUD_RecolorBombsArrowsAtMax:",
+                "STA.l $7EC760    ; replay the displaced store (arrow ones)",
+                "SEP #$30",
+                "LDA.l $7EF343    ; current bombs",
+                "CMP.b #$32       ; 50 (absolute max, all upgrades)",
+                "BNE .bombs_not_max",
+                "REP #$30",
+                "LDA.l $7EC758",
+                "EOR.w #$1000",
+                "STA.l $7EC758",
+                "LDA.l $7EC75A",
+                "EOR.w #$1000",
+                "STA.l $7EC75A",
+                "SEP #$30",
+                ".bombs_not_max",
+                "LDA.l $7EF377    ; current arrows",
+                "CMP.b #$46       ; 70 (absolute max, all upgrades)",
+                "BNE .arrows_not_max",
+                "REP #$30",
+                "LDA.l $7EC75E",
+                "EOR.w #$1000",
+                "STA.l $7EC75E",
+                "LDA.l $7EC760",
+                "EOR.w #$1000",
+                "STA.l $7EC760",
+                "SEP #$30",
+                ".arrows_not_max",
+                "REP #$30         ; Keys (rejoin point) expects 16-bit A",
+                "JML $0DFCEC",
+            ]
+        ).ensure_anchors(),
+        0x29D000,
+        "Max-capacity bomb/arrow HUD digit color.",
+    )
+    relocation.place(
+        Assembly.from_content(
+            [
+                "; [ENG-HUD] Same idea as HUD_RecolorBombsArrowsAtMax, for",
+                "; the 3-digit rupee counter. Hooked in at UpdateHUDBuffer's",
+                "; very last Rupees-digit store (bank_0D), replayed here, by",
+                "; which point all 3 digit tiles (hundreds/tens/ones) are",
+                "; already in the HUD buffer. $7EF362 (the displayed rupee",
+                "; count, ticking toward the real $7EF360 -- see bank_0D's",
+                "; own rupee-fill code) is what UpdateHUDBuffer itself draws",
+                "; from, so comparing it directly against 999 matches",
+                "; exactly what's on screen, including mid-tick-animation.",
+                "HUD_RecolorRupeesAtMax:",
+                "STA.l $7EC754    ; replay the displaced store (ones digit)",
+                "LDA.l $7EF362    ; current displayed rupees",
+                "CMP.w #$03E7     ; 999",
+                "BNE .rupees_not_max",
+                "LDA.l $7EC750",
+                "EOR.w #$1000",
+                "STA.l $7EC750",
+                "LDA.l $7EC752",
+                "EOR.w #$1000",
+                "STA.l $7EC752",
+                "LDA.l $7EC754",
+                "EOR.w #$1000",
+                "STA.l $7EC754",
+                ".rupees_not_max",
+                "JML $0DFCA4      ; Bombs (rejoin point)",
+            ]
+        ).ensure_anchors(),
+        0x29D100,
+        "Max-capacity rupee HUD digit color.",
+    )
+    return relocation
+
+
 def credits_font_upload(
     sources: Sources, *, changes: bool, credits_font: str = "jp"
 ) -> Relocation:
@@ -2737,6 +2860,46 @@ def apply_base_edits(
                 "db $07, $0F, $1F, $3F, $7F, $FF, $FF",
                 comment="[ENG-GFX] US-matching Eastern Palace floor tile",
             )
+
+    # HUD bomb/arrow/rupee digit counters turn gold at max capacity
+    # (GBA-matching feature; see hud_max_capacity_color). Repurposes the
+    # HUD's palette 5 (.hud_05 / #Palettes_HUD_RedYellow, PaletteData in
+    # bank_1B) -- used only by the file-select/equipment-preview screen's
+    # "Fire Shield" icon, never shown alongside the live gameplay HUD --
+    # into a proper "same red outline as every other digit, gold ($F8F878)
+    # fill instead of white" palette. Byte-neutral: same 4-color/8-byte
+    # table shape.
+    english.set_operand(
+        _address_of_line(
+            english, "PaletteData", "dw  $0000,  $00B8,  $433D,  $0000"
+        ),
+        "dw  $0000,  $0018,  $3FFF,  $0000",
+        comment="[ENG-HUD] palette 5: red outline (unchanged), $F8F878 fill",
+    )
+    # UpdateHUDBuffer's very last Arrows-digit store (bank_0D) is
+    # STA.l $7EC760, itself an exact JML-sized 4 bytes -- no orphan needed.
+    # By this point all 4 digit tiles (bomb + arrow, tens + ones) are
+    # already in the HUD buffer.
+    english.relocate_block(
+        0x0DFCE8,
+        "EN_HUD_RecolorBombsArrowsAtMax",
+        resume=0x0DFCEC,
+        comment=(
+            "; [ENG-HUD] Last Arrows-digit store -> relocated copy that"
+            " also recolors at max capacity (hud_max_capacity_color).",
+        ),
+    )
+    # Same for the rupee counter. UpdateHUDBuffer's very last Rupees-digit
+    # store (bank_0D) is STA.l $7EC754, also an exact JML-sized 4 bytes.
+    english.relocate_block(
+        0x0DFCA0,
+        "EN_HUD_RecolorRupeesAtMax",
+        resume=0x0DFCA4,
+        comment=(
+            "; [ENG-HUD] Last Rupees-digit store -> relocated copy that"
+            " also recolors at max capacity (hud_max_capacity_color).",
+        ),
+    )
     if epilepsy_fix:
         # OversaturateColor (bank $02) is the "bright" half of the shared
         # full-screen flash effect: HandleScreenFlash alternates every frame
@@ -3511,6 +3674,7 @@ def build(
         credits_font_upload(
             sources, changes=changes, credits_font=credits_font
         ),
+        hud_max_capacity_color(changes=changes),
         credits_bank(
             sources, changes=changes, keep_jp_credits=keep_jp_credits
         ),
