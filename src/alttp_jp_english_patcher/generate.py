@@ -355,11 +355,27 @@ def text(
     # $0B/$0C -- so every later message's US ID is JP's + 2. Rather than
     # delete them (which physically moves every byte of the data, exploding
     # the bank_22/bank_23 diff), teach CreateMessagePointers to hand those two
-    # the out-of-range IDs $18B/$18C as it assigns IDs, so every real message
+    # the out-of-range IDs $18C/$18D as it assigns IDs, so every real message
     # keeps its JP ID while the data stays byte-for-byte the US layout. Only
     # RenderText_Choose2HighOr3 references the two (repointed below,
     # full-only); without the redirect a 2-option "high" prompt (e.g. the
     # Great Fairy upgrade) would load whatever sits at ID $0B.
+    #
+    # The high slots must start at $18C, not the more obvious $18B: after the
+    # loop's very last real message, it always does one extra iteration --
+    # storing wherever $00/$02 land (the table-end $FF marker's own position)
+    # into whatever slot X currently is -- before the *next* byte read
+    # actually recognizes that $FF and exits. With 2 messages diverted, X
+    # lands on exactly $04A1 (395 real messages * 3) at that point, which
+    # used to be $18B's own slot -- silently overwriting its real pointer
+    # with the $FF marker's position (bank $23, deep in padding) right after
+    # this code correctly wrote it. Confirmed live (Mesen instruction trace
+    # from a fresh boot): $18C wrote correctly and stayed correct (its own
+    # slot, $04A4, isn't this collision point); $18B wrote correctly and was
+    # then clobbered by that trailing store a few instructions later, which
+    # is exactly what sent the Great Fairy bomb/arrow prompt reading garbage
+    # and crashing. Shifting both slots by one dodges the fixed collision
+    # point without changing anything else about the mechanism.
     #
     # Applied UNCONDITIONALLY, self-branching on `changes` at each site (real
     # redirect vs. same-size NOP filler in baseline), so CreateMessagePointers
@@ -372,7 +388,7 @@ def text(
                 [
                     "LDA.w #$0002 ; [ENG-TEXT] US-only msgs to give high IDs",
                     "STA.b $04    ; ($0B/$0C: the Choose2High cursor prompts)",
-                    "LDA.w #$04A1 ; first high slot -> ID $18B ($18B * 3)",
+                    "LDA.w #$04A4 ; first high slot -> ID $18C ($18C * 3)",
                     "STA.b $06",
                 ]
             ),
@@ -395,10 +411,10 @@ def text(
                     [
                         "CPX.w #$0021 ; [ENG-TEXT] slot for ID $0B, where the",
                         "BNE .store   ; two US-only prompts fall...",
-                        "LDA.b $04    ; ...divert them to $18B/$18C, then let",
+                        "LDA.b $04    ; ...divert them to $18C/$18D, then let",
                         "BEQ .store   ; the real msg $0B take this slot",
                         "PHX",
-                        "LDX.b $06        ; the $18B/$18C table slot",
+                        "LDX.b $06        ; the $18C/$18D table slot",
                         "LDA.b $00",
                         "STA.l $7F71C0,X",
                         "LDA.b $01",
@@ -438,11 +454,11 @@ def text(
             "RenderText_Choose2HighOr3": [
                 (
                     "dw $000B",
-                    "dw $018B    ; [ENG-TEXT] cursor prompt 1"
+                    "dw $018C    ; [ENG-TEXT] cursor prompt 1"
                     " (see CreateMessagePointers)",
                     1,
                 ),
-                ("dw $000C", "dw $018C    ; [ENG-TEXT] cursor prompt 2", 1),
+                ("dw $000C", "dw $018D    ; [ENG-TEXT] cursor prompt 2", 1),
             ],
         }
         engine.apply_edit_table(engine_edits)
