@@ -251,13 +251,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "later Japanese revision's photosensitive-epilepsy-safety pass",
     )
     parser.add_argument(
-        "--yellow-counts-at-current-max",
+        "--yellow-counts-at-absolute-max",
         action="store_true",
         help="make the HUD bomb/arrow counters' max-capacity gold color "
-        "trigger at the player's current upgrade tier's own cap instead; "
-        "by default it only triggers at the true, fully-upgraded maximum "
-        "(50 bombs, 70 arrows). Rupees are unaffected either way (999 is "
-        "always the true max, no tiers)",
+        "trigger only at the true, fully-upgraded maximum (50 bombs, 70 "
+        "arrows) instead; by default it triggers at the player's current "
+        "upgrade tier's own cap, matching the GBA re-release's own "
+        "behavior. Rupees are unaffected either way (999 is always the "
+        "true max, no tiers)",
     )
     parser.add_argument(
         "--no-gba-text-fixes",
@@ -355,7 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         keep_jp_credits=args.keep_jp_credits,
         credits_font=args.credits_font,
         us_title_screen=args.title_screen == "us",
-        yellow_counts_at_current_max=args.yellow_counts_at_current_max,
+        yellow_counts_at_absolute_max=args.yellow_counts_at_absolute_max,
         gba_text_fixes=not args.no_gba_text_fixes,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,

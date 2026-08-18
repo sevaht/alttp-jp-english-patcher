@@ -801,7 +801,7 @@ def font_upload(sources: Sources, *, changes: bool) -> Relocation:
 
 
 def hud_max_capacity_color(
-    *, changes: bool, yellow_counts_at_current_max: bool = False
+    *, changes: bool, yellow_counts_at_absolute_max: bool = False
 ) -> Relocation:
     """Bank ``$29`` (free space): recolors the HUD bomb/arrow/rupee digit
     counters to gold when the player is at maximum capacity (50 bombs, 70
@@ -816,19 +816,22 @@ def hud_max_capacity_color(
     otherwise-idle slot repointed to a matching red-outline/gold-fill
     palette) when at max.
 
-    By default bombs/arrows compare the live count directly against a fixed
-    constant ($32/50, $46/70) -- the absolute, fully-upgraded cap, not the
-    player's current capacity tier. ``yellow_counts_at_current_max=True``
-    (``--yellow-counts-at-current-max``) instead compares against
-    ``CapacityUpgrades`` indexed by the player's own upgrade count
-    ($7EF370/$7EF371) -- the same lookup the bomb/arrow-refill code (also
-    bank_0D) uses to know when to stop refilling -- so it reads as "matches
-    whatever cap you currently have", turning gold at e.g. 40/40 arrows on
-    an early, not-fully-upgraded save rather than only the true 70. Rupees
-    are unaffected either way: they have no tiered capacity, so 999 is
-    always a fixed-constant compare against the same hardcoded cap the
-    rupee-fill code (bank_0D) already clamps both the real and displayed
-    rupee count to. Doing the recolor post-hoc, on the already-drawn tiles,
+    By default bombs/arrows compare the live count against ``CapacityUpgrades``
+    indexed by the player's own upgrade count ($7EF370/$7EF371) -- the same
+    lookup the bomb/arrow-refill code (also bank_0D) uses to know when to
+    stop refilling -- so it reads as "matches whatever cap you currently
+    have", turning gold at e.g. 40/40 arrows on an early, not-fully-upgraded
+    save rather than only the true 70; confirmed against the GBA
+    re-release's own behavior (a common online claim that the GBA version
+    uses the absolute cap instead turned out not to hold up under actual
+    testing). ``yellow_counts_at_absolute_max=True``
+    (``--yellow-counts-at-absolute-max``) instead compares the live count
+    directly against a fixed constant ($32/50, $46/70) -- the absolute,
+    fully-upgraded cap, ignoring the player's current tier. Rupees are
+    unaffected either way: they have no tiered capacity, so 999 is always a
+    fixed-constant compare against the same hardcoded cap the rupee-fill
+    code (bank_0D) already clamps both the real and displayed rupee count
+    to. Doing the recolor post-hoc, on the already-drawn tiles,
     rather than diverting the draw itself needs no call back into bank_0D's
     ``HexToDec`` -- a same-bank-only routine (it returns via RTS, not RTL)
     that would otherwise force this code to live in bank_0D itself, where
@@ -843,7 +846,16 @@ def hud_max_capacity_color(
     correct) before that was diagnosed as a design mismatch, not a bug --
     the fill itself needs to turn gold, which means owning a palette slot.
     """
-    if yellow_counts_at_current_max:
+    if yellow_counts_at_absolute_max:
+        bombs_check = [
+            "LDA.l $7EF343    ; current bombs",
+            "CMP.b #$32       ; 50 (absolute max, all upgrades)",
+        ]
+        arrows_check = [
+            "LDA.l $7EF377    ; current arrows",
+            "CMP.b #$46       ; 70 (absolute max, all upgrades)",
+        ]
+    else:
         bombs_check = [
             "LDA.l $7EF370    ; bomb capacity-upgrade index",
             "TAY",
@@ -855,15 +867,6 @@ def hud_max_capacity_color(
             "TAY",
             "LDA.l $7EF377    ; current arrows",
             "CMP.w CapacityUpgrades_arrows_hex,Y ; this tier's own cap",
-        ]
-    else:
-        bombs_check = [
-            "LDA.l $7EF343    ; current bombs",
-            "CMP.b #$32       ; 50 (absolute max, all upgrades)",
-        ]
-        arrows_check = [
-            "LDA.l $7EF377    ; current arrows",
-            "CMP.b #$46       ; 70 (absolute max, all upgrades)",
         ]
     relocation = Relocation(changes=changes)
     relocation.place(
@@ -3972,7 +3975,7 @@ def build(
     keep_jp_credits: bool = False,
     credits_font: str = "jp",
     us_title_screen: bool = True,
-    yellow_counts_at_current_max: bool = False,
+    yellow_counts_at_absolute_max: bool = False,
     gba_text_fixes: bool = True,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
@@ -4005,10 +4008,11 @@ def build(
     every full-screen flash effect's brightness to match a later Japanese
     revision's photosensitive-epilepsy-safety pass; ``False`` leaves JP
     1.0's original (much brighter) flash intensity.
-    ``yellow_counts_at_current_max`` (also only meaningful alongside
+    ``yellow_counts_at_absolute_max`` (also only meaningful alongside
     ``changes``) makes the HUD bomb/arrow max-capacity gold color (see
-    :func:`hud_max_capacity_color`) trigger at the player's *current*
-    upgrade tier's own cap instead of the true, fully-upgraded 50/70.
+    :func:`hud_max_capacity_color`) trigger only at the true, fully-upgraded
+    50/70 instead of the player's *current* upgrade tier's own cap (the
+    default, matching the GBA re-release's own behavior).
     ``keep_jp_credits`` (also only meaningful alongside ``changes``) skips
     :func:`credits_bank`'s handful of JP-mistake text fixes, leaving the
     (already JP-fonted) credits text exactly as JP 1.0 shipped it. Player
@@ -4051,7 +4055,7 @@ def build(
         ),
         hud_max_capacity_color(
             changes=changes,
-            yellow_counts_at_current_max=yellow_counts_at_current_max,
+            yellow_counts_at_absolute_max=yellow_counts_at_absolute_max,
         ),
         credits_bank(
             sources,
