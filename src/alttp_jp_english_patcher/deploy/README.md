@@ -92,6 +92,21 @@ build's English translation no longer fits in that time, so these durations
 are widened to the US ROM's own values (and, for the three dungeon
 captions, its wider counter) instead.
 
+### GBA-era wording fixes
+
+By default this build applies wording fixes to the dialogue, the intro, the
+credits, and the item menu, matching the GBA re-release's translation:
+"pegasus shoes" → "pegasus boots", "faerie"/"faeries" → "fairy"/"fairies",
+"wise men"/"wise man" → "sages"/"sage" (the singular form never occurs), and
+"smithery" → "smithy" (the credits' SMITHERY location caption, recentered;
+"faeries" → "fairies" is also a credits-only occurrence, the "VENUS. QUEEN
+OF FAERIES" caption). The bottled fairy item's own menu name also changes
+from "FAERIE" to "FAIRY", and the bottled "GOOD BEE" item is renamed to
+"GOLDEN"/"BEE" (two rows, matching the "MAGIC"/"MIRROR" layout) -- both in
+the bottle-content menu and the equipped-item display. Pass
+`--no-gba-text-fixes` when generating to keep the original US translation's
+wording instead.
+
 ### Title screen
 
 The US ROM's title screen plays a sword-reveal animation (the Triforce
@@ -123,7 +138,7 @@ python3 binextract.py          # extract bin/gfx/* (JP + US), bin/brr/* (JP)
 
 On Windows, run `binextract.py`, then `_build.bat`. `make` also works on any
 platform with `asarmon` on `PATH`. All three produce `alttp-english.sfc`; a
-correct default build has MD5 `e3ca6dcb8869428ca99eb38037aad1da`.
+correct default build has MD5 `1de7a7f979a5b3feefcd57044787f788`.
 
 ## Binaries
 

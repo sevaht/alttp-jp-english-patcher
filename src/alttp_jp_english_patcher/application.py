@@ -260,6 +260,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "always the true max, no tiers)",
     )
     parser.add_argument(
+        "--no-gba-text-fixes",
+        action="store_true",
+        help="keep the original US translation's wording in dialogue, the "
+        "intro, the credits, and the item menu; by default this patcher "
+        "applies GBA-era wording fixes: 'pegasus shoes' -> 'pegasus "
+        "boots', 'faerie'/'faeries' -> 'fairy'/'fairies', 'wise men'/'wise "
+        "man' -> 'sages'/'sage' (the latter never occurs), 'smithery' -> "
+        "'smithy', and the bottled 'GOOD BEE' item -> 'GOLDEN'/'BEE'",
+    )
+    parser.add_argument(
         "--keep-jp-credits",
         action="store_true",
         help="leave the (JP-fonted) credits text exactly as JP 1.0 shipped "
@@ -346,6 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         credits_font=args.credits_font,
         us_title_screen=args.title_screen == "us",
         yellow_counts_at_current_max=args.yellow_counts_at_current_max,
+        gba_text_fixes=not args.no_gba_text_fixes,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,
     )

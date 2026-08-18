@@ -196,10 +196,218 @@ def nop_fill(
 THEFONT_LABELS = frozenset({"TheFont", "TheFont_end"})
 
 
+def gba_dialogue_text_fixes(main: Assembly) -> None:
+    """GBA-era wording fixes applied to the dialogue/intro message data
+    (``Message_Data``, US bank $1C): ``pegasus shoes`` -> ``pegasus boots``,
+    ``faerie`` -> ``fairy`` (the plural, ``faeries`` -> ``fairies``, only
+    occurs in the credits -- see ``credits_bank``'s ``edit_venus_faeries_
+    to_fairies``), and ``wise men``/``wise man`` -> ``sages``/``sage`` (the
+    last never occurs). Every message byte here is the dictionary/literal-
+    character encoding ``CreateMessagePointers`` walks (see :func:`text`'s
+    docstring); each edit below was decoded and re-encoded by hand against
+    that scheme, not guessed.
+
+    All twelve plain ``wise men`` -> ``sages`` occurrences share one
+    byte-identical 5-byte encoding (``$E2, $D0, $59, $BE, $27`` -- the
+    dictionary tokens for "wi"/"se"/" "/"me"/"n") and re-encode to an
+    equal-length literal ``sages`` (``$2C, $1A, $20, $1E, $2C``), so one
+    substring replace covers all of them; the boundary is safe because a
+    handful of other same-shaped occurrences (an apostrophe, or the phrase
+    split across a real line-break) never contain that literal 5-byte run in
+    one line and so never match it -- each of those is edited individually
+    below, first, so none of them can spuriously match the batch. Two
+    messages (0038/0039) repeat the same split verbatim.
+    """
+    # The one occurrence with a following possessive: "men's" -> "'s line"
+    # keeps growing past the batch's word boundary, so it is handled with
+    # its own splice (+1 byte: 8 -> 9).
+    main.splice(
+        "#_1CCDA2:",
+        datas(
+            [
+                "db $2C, $1A, $20, $1E, $2C, $51, $59, $25 ; sages' l",
+                "db $B4 ; in",
+            ]
+        ),
+        until="#_1CCDAA:",
+    )
+    # "seven wise men's" -> "seven sages'" (drop the extra "s" a plural
+    # possessive doesn't take): -1 byte (14 -> 13).
+    main.splice(
+        "#_1C88CB:",
+        datas(
+            [
+                "db $C3, $59, $D8, $59, $D0, $2F, $A0, $2C"
+                " ; open the seven s",
+                "db $1A, $20, $1E, $2C, $51 ; ages'",
+            ]
+        ),
+        until="#_1C88D9:",
+    )
+    # "broken the wise[scroll]men's seal" -> "broken the sages'[scroll]seal"
+    # -- the word itself can't straddle a line break, so the break moves to
+    # right after it instead.
+    main.splice(
+        "#_1C9276:",
+        datas(
+            [
+                "db $1B, $2B, $28, $24, $A0, $D8, $59, $2C ; broken the s",
+                "db $1A, $20, $1E, $2C, $51 ; ages'",
+                "db $73 ; scroll text",
+                "db $D0, $1A, $25, $59, $8C ; seal and ",
+            ]
+        ),
+        until="#_1C9288:",
+    )
+    # "of the wise[scroll]men.  I want" -> "of the sages.[scroll]I want",
+    # same break-relocation idea; Message_0038 and Message_0039 repeat this
+    # passage verbatim at different addresses. The scroll-text line itself
+    # (between ``brk`` and ``after``) is left untouched by both splices.
+    for start, brk, after, end in (
+        ("#_1C9691:", "#_1C9695:", "#_1C9696:", "#_1C969E:"),
+        ("#_1C9973:", "#_1C9977:", "#_1C9978:", "#_1C9980:"),
+    ):
+        main.splice(
+            start,
+            datas(["db $D8, $59, $2C, $1A, $20, $1E, $2C, $41 ; the sages."]),
+            until=brk,
+        )
+        main.splice(
+            after, datas(["db $08, $59, $DF, $27 ; I wan"]), until=end
+        )
+    # "of the wise[scroll]men..." -> "of the[scroll]sages..." (the message's
+    # last line, so the shortened word just becomes its own line).
+    main.splice(
+        "#_1CB464:",
+        datas(["db $C6, $59, $D8, $59 ; of the "]),
+        until="#_1CB46A:",
+    )
+    main.splice(
+        "#_1CB46B:",
+        datas(["db $2C, $1A, $20, $1E, $2C, $43 ; sages…"]),
+        until="#_1CB46E:",
+    )
+    # "of the wise[wait][scroll]men.  Only a" -> "of the sages.[wait]
+    # [scroll]Only a".
+    main.splice(
+        "#_1CEBC3:",
+        datas(
+            [
+                'db $59, $C6, $59, $D8, $59, $2C, $1A, $20 ; " of the sag"',
+                'db $1E, $2C, $41 ; "es."',
+            ]
+        ),
+        until="#_1CEBCA:",
+    )
+    main.splice(
+        "#_1CEBCC:",
+        datas(["db $0E, $27, $B9, $1A ; Only a"]),
+        until="#_1CEBD4:",
+    )
+    # Seven occurrences split only by the disassembly's own cosmetic 8-byte
+    # row chunking (no real line break involved), each re-encoding to the
+    # same byte count so a straight per-row replace applies.
+    main.replace_all(
+        [
+            (  # Message_0032: "of the seven wise men." -> "...sages."
+                "#_1C9027: db $C6, $59, $D8, $59, $D0, $2F, $A0, $E2",
+                "#_1C9027: db $C6, $59, $D8, $59, $D0, $2F, $A0, $2C",
+                1,
+            ),
+            (
+                "#_1C902F: db $D0, $59, $BE, $27, $41",
+                "#_1C902F: db $1A, $20, $1E, $2C, $41",
+                1,
+            ),
+            (  # Message_0038: "when the seven wise men created" -> "...sages"
+                "#_1C95DC: db $59, $D0, $2F, $A0, $E2, $D0, $59, $BE",
+                "#_1C95DC: db $59, $D0, $2F, $A0, $2C, $1A, $20, $1E",
+                1,
+            ),
+            (
+                "#_1C95E4: db $27",
+                "#_1C95E4: db $2C",
+                1,
+            ),
+            (  # Message_0039: same passage, verbatim
+                "#_1C98BE: db $59, $D0, $2F, $A0, $E2, $D0, $59, $BE",
+                "#_1C98BE: db $59, $D0, $2F, $A0, $2C, $1A, $20, $1E",
+                1,
+            ),
+            (
+                "#_1C98C6: db $27",
+                "#_1C98C6: db $2C",
+                1,
+            ),
+            (  # Message_003A: "of the wise men.   THE KING" -> "...sages..."
+                "#_1C99B4: db $C6, $59, $D8, $59, $E2, $D0, $59, $BE",
+                "#_1C99B4: db $C6, $59, $D8, $59, $2C, $1A, $20, $1E",
+                1,
+            ),
+            (
+                "#_1C99BC: db $27, $41, $89, $13, $07, $04, $59, $0A",
+                "#_1C99BC: db $2C, $41, $89, $13, $07, $04, $59, $0A",
+                1,
+            ),
+            (  # Message_0035: "the seven wise men, they" -> "...sages, they"
+                "#_1C9341: db $D8, $59, $D0, $2F, $A0, $E2, $D0, $59",
+                "#_1C9341: db $D8, $59, $D0, $2F, $A0, $2C, $1A, $20",
+                1,
+            ),
+            (
+                "#_1C9349: db $BE, $27, $42, $59, $D8, $32, $59, $AD",
+                "#_1C9349: db $1E, $2C, $42, $59, $D8, $32, $59, $AD",
+                1,
+            ),
+            (  # Message_0125: "the seven wise men sealed" -> "...sages..."
+                "#_1CDF98: db $D8, $59, $D0, $2F, $A0, $E2, $D0, $59",
+                "#_1CDF98: db $D8, $59, $D0, $2F, $A0, $2C, $1A, $20",
+                1,
+            ),
+            (
+                "#_1CDFA0: db $BE, $27, $59, $D0, $1A, $25, $1E, $1D",
+                "#_1CDFA0: db $1E, $2C, $59, $D0, $1A, $25, $1E, $1D",
+                1,
+            ),
+            (  # Message_0135: "As the wise men sealed" -> "As the sages..."
+                "#_1CE994: db $00, $2C, $59, $D8, $59, $E2, $D0, $59",
+                "#_1CE994: db $00, $2C, $59, $D8, $59, $2C, $1A, $20",
+                1,
+            ),
+            (
+                "#_1CE99C: db $BE, $27, $59, $D0, $1A, $25, $A4, $D8",
+                "#_1CE99C: db $1E, $2C, $59, $D0, $1A, $25, $A4, $D8",
+                1,
+            ),
+            (  # He gives you the Pegasus Shoes! -> ...Pegasus Boots!
+                "#_1CA99E: db $12, $21, $28, $1E, $2C, $3E, $8A, $0D",
+                "#_1CA99E: db $01, $28, $28, $2D, $2C, $3E, $8A, $0D",
+                1,
+            ),
+            (  # You caught a faerie! -> ...a fairy!
+                "#_1CC3D3: db $59, $1A, $59, $1F, $1A, $A6, $22, $1E",
+                "#_1CC3D3: db $59, $1A, $59, $1F, $1A, $22, $2B, $32",
+                1,
+            ),
+            (  # the figure of a faerie. -> ...a fairy.
+                "#_1CF9E5: db $59, $1A, $59, $1F, $1A, $A6, $22, $1E",
+                "#_1CF9E5: db $59, $1A, $59, $1F, $1A, $22, $2B, $32",
+                1,
+            ),
+            (  # the 12 remaining plain "wise men" -> "sages" occurrences
+                "$E2, $D0, $59, $BE, $27",
+                "$2C, $1A, $20, $1E, $2C",
+                12,
+            ),
+        ]
+    )
+
+
 def text(
     sources: Sources,
     *,
     changes: bool,
+    gba_text_fixes: bool = True,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Relocation:
     """The US text subsystem: the VWF font (bank ``$20``), the message engine
@@ -209,6 +417,10 @@ def text(
     ``TextCommandLengths`` (reached only by an out-of-bounds index) close over
     the entire live subsystem. Dead blocks drop out, their space held with an
     ``org`` so survivors keep their +$200000 mirror address.
+
+    ``gba_text_fixes`` (only meaningful alongside ``changes``) applies
+    :func:`gba_dialogue_text_fixes` to the message data; ``False`` leaves
+    the US translation's original wording untouched.
     """
     us, jp = sources.us, sources.jp
     engine = us.extract(
@@ -227,6 +439,8 @@ def text(
     )
     main = us.blocks_until("Message_Data")
     overflow = us.blocks_until("Message_DataExtra")
+    if changes and gba_text_fixes:
+        gba_dialogue_text_fixes(main)
     # CreateMessagePointers walks byte-by-byte until it reads a literal $FF
     # (the table-end marker); in the US ROM this falls out for free since
     # Message_DataExtra runs to the natural, $FF-padded end of its bank. Our
@@ -1076,7 +1290,11 @@ def credits_font_upload(
 
 
 def credits_bank(
-    sources: Sources, *, changes: bool, keep_jp_credits: bool = False
+    sources: Sources,
+    *,
+    changes: bool,
+    keep_jp_credits: bool = False,
+    gba_text_fixes: bool = True,
 ) -> Relocation:
     """Bank ``$2E``: the JP credits reader + tables, mirror-placed, kept on
     JP's own font and text -- the JP credits are already English, and its
@@ -1101,6 +1319,12 @@ def credits_bank(
     further caption whose unmodified JP text broke the rule (SAHASRALAH'S
     HOMECOMING) is nudged back in line too, still gated on
     ``keep_jp_credits`` since it's a deviation from pure JP 1.0.
+
+    ``gba_text_fixes`` (independent of ``keep_jp_credits``: GBA-era wording
+    fixes, not JP-1.0-mistake fixes) recenters and relabels the SMITHERY
+    location caption to SMITHY, and changes the VENUS. QUEEN OF FAERIES
+    caption to FAIRIES, matching the same wording changes
+    :func:`gba_dialogue_text_fixes` makes to the dialogue.
 
     Placed in three contiguous groups (JP interleaves them with credits code
     we do not relocate). The readers return long -- they are reached across
@@ -1195,6 +1419,49 @@ def credits_bank(
             "dw $4F62, $0100 ; VRAM $C49E | 2 bytes",
             "dw $4E62, $0100 ; VRAM $C49C | 2 bytes",
             1,
+        )
+
+    def edit_venus_faeries_to_fairies(block: Assembly) -> None:
+        # FAERIES -> FAIRIES, same length (7 chars) -- no recentering needed.
+        block.replace(
+            "; SMALL: VENUS. QUEEN OF FAERIES",
+            "; SMALL: VENUS. QUEEN OF FAIRIES",
+            1,
+        )
+        block.replace(
+            "db $1F, $1A, $1E, $2B, $22, $1E, $2C",
+            "db $1F, $1A, $22, $2B, $22, $1E, $2C",
+            1,
+        )
+
+    def edit_smithery_to_smithy(block: Assembly) -> None:
+        # 6 chars, even -- centered means +1 column from JP's 8-char
+        # SMITHERY on both the TOP and BOTTOM copies (+$0100 raw, the same
+        # per-column step edit_recenter_sahasralahs_homecoming's apostrophe
+        # shift above uses).
+        block.splice(
+            "; TOP: SMITHERY",
+            notes(["; TOP: SMITHY"])
+            + datas(
+                [
+                    "dw $ED62, $0B00 ; VRAM $C5DA | 12 bytes",
+                    "db $6F, $69, $65, $70, $64, $75",
+                ]
+            )
+            + notes([""]),
+            until="; BOTTOM: SMITHERY",
+        )
+        block.splice(
+            "; BOTTOM: SMITHERY",
+            notes(["; BOTTOM: SMITHY"])
+            + datas(
+                [
+                    "dw $0D63, $0B00 ; VRAM $C61A | 12 bytes",
+                    "db $95, $8F, $8B, $96, $8A, $9B",
+                ]
+            )
+            + notes([""]),
+            until=".chargfx_kak2",
         )
 
     def edit_ganons_tower(block: Assembly) -> None:
@@ -1385,6 +1652,9 @@ def credits_bank(
                     edit_flippers_for_sale(group)
                     edit_flute_boy(group)
                     edit_recenter_sahasralahs_homecoming(group)
+            if gba_text_fixes and "Credits_AddEndingSequenceText" in names:
+                edit_venus_faeries_to_fairies(group)
+                edit_smithery_to_smithy(group)
         start = require_start(group)
         relocation.place(
             group, mirror(start), f"credits region, mirror of JP ${start:06X}."
@@ -1392,7 +1662,9 @@ def credits_bank(
     return relocation
 
 
-def item_menu(sources: Sources, *, changes: bool) -> Relocation:
+def item_menu(
+    sources: Sources, *, changes: bool, gba_text_fixes: bool = True
+) -> Relocation:
     """Bank ``$2D``: the US item menu, mirror-placed. Four entry routines get
     a DBR-setting trampoline (their bodies become ``<name>_body`` and return
     long); the name-text tables get the US content, with the 2-row US
@@ -1400,6 +1672,14 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
     (real copies in full, same-size labelled padding in the baseline) so the
     tables after it -- and ``MenuCursorPositions`` (always ``+$20``) -- keep a
     stable address and don't cascade in the baseline<->full review diff.
+
+    ``gba_text_fixes`` (only meaningful alongside ``changes``) edits two
+    entries in ``ItemMenuNameText_Bottles`` -- shared by the bottle-content
+    cursor menu and the equipped-Y-item name display: the bottled "FAERIE"
+    entry becomes "FAIRY" (single row, left-aligned, unchanged layout), and
+    "GOOD BEE" becomes "GOLDEN"/"BEE" (two rows, top-left/bottom-right,
+    matching ``ItemMenuNameText_Mirror``'s "MAGIC"/"MIRROR" layout) -- the
+    names the GBA re-release and every later game use.
     """
     us, jp = sources.us, sources.jp
     entries = (
@@ -1515,10 +1795,67 @@ def item_menu(sources: Sources, *, changes: bool) -> Relocation:
                     line.arguments = jp_rows[row]
                 row += 1
 
+    def fix_good_bee_to_golden_bee(region: Assembly) -> None:
+        # US calls this bottled bee the "Good Bee"; the GBA re-release (and
+        # every later game) calls it the "Golden Bee". Two rows, matching
+        # ItemMenuNameText_Mirror's MAGIC/MIRROR layout: GOLDEN top-left,
+        # BEE bottom-right. Menu-font tiles are alphabetical from $2550 (A).
+        index = region.find(
+            "dw $2556, $255E, $255E, $2553, $24F5, $2551, $2554, $2554"
+        )
+        top, bottom = region.lines[index - 1], region.lines[index]
+        top.arguments = [
+            "$2556",
+            "$255E",
+            "$255B",
+            "$2553",
+            "$2554",
+            "$255D",
+            "$24F5",
+            "$24F5",
+        ]  # GOLDEN
+        bottom.arguments = [
+            "$24F5",
+            "$24F5",
+            "$24F5",
+            "$24F5",
+            "$24F5",
+            "$2551",
+            "$2554",
+            "$2554",
+        ]  # BEE
+        bottom.comment = " golden bee"
+
+    def fix_faerie_to_fairy(region: Assembly) -> None:
+        # Single row, left-aligned (matches BEE's own single-row layout
+        # just below it).
+        row = region.line(
+            "dw $2555, $2550, $2554, $2561, $2558, $2554, $24F5, $24F5"
+        )
+        row.arguments = [
+            "$2555",
+            "$2550",
+            "$2558",
+            "$2561",
+            "$2568",
+            "$24F5",
+            "$24F5",
+            "$24F5",
+        ]  # FAIRY
+        row.comment = " fairy"
+
     region = us.concat([*name_text])
     expand_mirror_slot(region)  # both builds: real copies (full) or padding
     if changes:
-        region.apply_edit_table({"AbilityText": [restore_ability_jp_rows]})
+        edit_table: dict[str, list[Edit]] = {
+            "AbilityText": [restore_ability_jp_rows]
+        }
+        if gba_text_fixes:
+            edit_table["ItemMenuNameText_Bottles"] = [
+                fix_faerie_to_fairy,
+                fix_good_bee_to_golden_bee,
+            ]
+        region.apply_edit_table(edit_table)
     place(region, mirror(require_start(region)))
 
     cursor = us.block("MenuCursorPositions", comments=False)
@@ -3636,6 +3973,7 @@ def build(
     credits_font: str = "jp",
     us_title_screen: bool = True,
     yellow_counts_at_current_max: bool = False,
+    gba_text_fixes: bool = True,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Rom:
@@ -3688,6 +4026,12 @@ def build(
     own title screen instead. Either way, the intro keeps JP 1.0's own
     press-to-skip timing (skippable as soon as the triforce forms, not
     gated behind the sword animation like the real US ROM).
+    ``gba_text_fixes`` (also only meaningful alongside ``changes``) applies
+    six GBA-era wording fixes to the dialogue/intro and credits text (see
+    :func:`gba_dialogue_text_fixes`/``credits_bank``'s ``edit_smithery_to_
+    smithy``/``edit_venus_faeries_to_fairies``) plus ``item_menu``'s "GOOD
+    BEE" -> "GOLDEN"/"BEE" item-menu rename; ``False`` leaves the original
+    US translation's wording.
     """
     title_screen_on = us_title_screen and changes
     sources = Sources(
@@ -3698,6 +4042,7 @@ def build(
         text(
             sources,
             changes=changes,
+            gba_text_fixes=gba_text_fixes,
             nop_padbyte_threshold=nop_padbyte_threshold,
         ),
         font_upload(sources, changes=changes),
@@ -3709,10 +4054,13 @@ def build(
             yellow_counts_at_current_max=yellow_counts_at_current_max,
         ),
         credits_bank(
-            sources, changes=changes, keep_jp_credits=keep_jp_credits
+            sources,
+            changes=changes,
+            keep_jp_credits=keep_jp_credits,
+            gba_text_fixes=gba_text_fixes,
         ),
         attract_text_timing_fix(sources, changes=changes),
-        item_menu(sources, changes=changes),
+        item_menu(sources, changes=changes, gba_text_fixes=gba_text_fixes),
         file_select(
             sources,
             changes=changes,

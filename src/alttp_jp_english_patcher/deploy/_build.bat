@@ -12,6 +12,6 @@ asarmon -wnoW1006 -wnoW1030 --fix-checksum=on main.asm alttp-english.sfc
 certutil -hashfile alttp-english.sfc md5
 
 @echo Expected:
-@echo e3ca6dcb8869428ca99eb38037aad1da
+@echo 1de7a7f979a5b3feefcd57044787f788
 
 pause
