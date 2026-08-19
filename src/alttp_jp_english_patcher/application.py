@@ -278,6 +278,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "'Flute' naming",
     )
     parser.add_argument(
+        "--fix-mothula-bugs",
+        action="store_true",
+        help="fix Mothula's (Skull Woods boss) damage table so it takes "
+        "proper damage from golden-sword swings/dashes, tempered-sword "
+        "spin attacks, and golden-sword spin attacks (all currently "
+        "zeroed out, matching a longtime community-documented JP 1.0/US "
+        "bug); by default this patcher leaves it exactly as JP 1.0/US "
+        "shipped it. Does not touch Mothula's own immunity to its room's "
+        "spike hazards (the two are linked -- see the tool's own docs) "
+        "so this is not a full GBA-parity fix, just this specific bug",
+    )
+    parser.add_argument(
         "--no-gba-text-fixes",
         action="store_true",
         help="keep the original US translation's wording in dialogue, the "
@@ -377,6 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         gba_text_fixes=not args.no_gba_text_fixes,
         low_health_beep=not args.no_low_health_beep,
         flute_is_ocarina=args.flute_is_ocarina,
+        fix_mothula_bugs=args.fix_mothula_bugs,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,
     )

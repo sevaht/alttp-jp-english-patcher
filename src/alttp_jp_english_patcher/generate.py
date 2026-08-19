@@ -3260,6 +3260,126 @@ def _address_of_pool_line(english: Rom, name: str, needle: str) -> int:
     return address
 
 
+def mothula_damage_bugfix(*, changes: bool, fix_mothula_bugs: bool = False) -> Relocation:
+    """Bank ``$29`` (free space): fixes Mothula (sprite ``$88``, Skull
+    Woods) being immune to golden-sword swings/dashes, tempered-sword spin
+    attacks, and golden-sword spin attacks -- with full GBA parity (the
+    spike-immunity side is *not* disturbed either).
+
+    Every hit Link lands resolves to a "damage class" (1-5: fighter/
+    master/tempered/golden sword swing = 1/2/3/4, spin attack = one class
+    higher than the same-tier swing (2/3/4/5), poke roughly one lower --
+    ``.damage_class``, bank_06, inside ``CheckSwordDamageToSprite``) which
+    indexes the target sprite's own row in a per-(sprite, class) "defense
+    subclass" chart (``EnemyDamageCompressed``, decompressed once at boot
+    by ``DecompressEnemyDamageSubclasses``, bank_02, into WRAM
+    ``$7F6000``); that subclass then indexes ``DamageSubclassValue``
+    (bank_0D) for the actual damage dealt. Mothula's own row sets defense
+    subclass 0 (-> always 0 damage, i.e. "immune") for classes 4 and 5 --
+    decompressed and decoded by hand (matches a longtime community
+    finding, not guessed): this blocks golden-sword regular swings,
+    golden-sword dashes/charges, and tempered-sword spin attacks (all
+    class 4), and golden-sword spin attacks (class 5). This isn't purely
+    an oversight: Mothula's own room is filled with the roaming spike
+    hazards it periodically summons, which -- per the community damage-
+    class legend (every "Spike Trap" icon sits in class 4 alongside those
+    same sword hits) -- deal contact damage through this same class-4/5
+    slot, so the original devs zeroed it out to stop Mothula chipping
+    itself to death on its own spikes between player hits.
+
+    Rather than un-zeroing classes 4/5 directly (which would also
+    un-zero the spike-contact damage sharing that slot), this instead
+    matches the community's known-working fix (``mothula_l4.ips``, prior
+    art for the same bug, independently confirmed via its approach
+    rather than copied byte-for-byte): redirect Mothula's own class-4/5
+    *sword* hits to damage class 6 before they ever reach the table
+    lookup, and give class 6 -- confirmed via the community damage-class
+    legend to be used by nothing but the Bow, not by any sword tier or
+    the Spike Trap -- a real (nonzero) defense subclass in Mothula's row.
+    Classes 4 and 5 themselves are left at their original subclass 0, so
+    spike contact damage (whatever code path deals it) is completely
+    unaffected -- this is the difference from an earlier version of this
+    fix, which edited classes 4/5 directly and would likely have
+    reintroduced Mothula self-damaging on its own spikes.
+
+    Two hooks:
+    1. Right after ``DecompressEnemyDamageSubclasses``'s nibble-unpacking
+       loop finishes (before it returns, bank_02) -- give Mothula's row a
+       nonzero (1, matching classes 1-3's 2/4/8 damage scaling) defense
+       subclass for class 6 only. Simplest done once, right after the
+       whole table exists in WRAM, rather than editing the still-
+       compressed ROM data.
+    2. Inside ``CheckSwordDamageToSprite`` itself (bank_06), right after
+       it restores the sprite-slot ``X`` (the ``PLX`` following the
+       class-assignment/hammer-override logic) -- if the current sprite
+       is Mothula and the class just assigned is 4 or 5, rewrite it to 6.
+       Placed after ``PLX`` specifically because ``X`` is repurposed as a
+       scratch table index for the class lookup itself and only holds the
+       sprite slot again once restored.
+    """
+    relocation = Relocation(changes=changes)
+    if changes and fix_mothula_bugs:
+        relocation.place(
+            Assembly.from_content(
+                [
+                    "; [ENG-MOTHULA] Hooked from DecompressEnemyDamage"
+                    "Subclasses's loop-exit check (bank_02) -- see"
+                    " mothula_damage_bugfix's docstring. Mothula (sprite"
+                    " $88) is DMGTABLE row $880-$88F; class 6 (Bow --"
+                    " unused by any sword tier or the Spike Trap) sits",
+                    "; at $886. Loop still running (X<$1000) falls"
+                    " through to .continue_decompress, an unmodified"
+                    " replay of the original loop-continue branch.",
+                    "MothulaDamageFix:",
+                    "CPX.w #$1000",
+                    "BCC .continue_decompress",
+                    "LDA.b #$01",
+                    "STA.l $7F6886 ; Mothula: damage class 6 (was 0)",
+                    "SEP #$30",
+                    "RTL",
+                    "",
+                    ".continue_decompress",
+                    "JML $02FC02 ; DecompressEnemyDamageSubclasses .next",
+                ]
+            ).ensure_anchors(),
+            0x29D200,
+            "Mothula damage-table bugfix (see apply_base_edits).",
+        )
+        relocation.place(
+            Assembly.from_content(
+                [
+                    "; [ENG-MOTHULA] Hooked from CheckSwordDamageToSprite"
+                    " (bank_06) right after it restores the sprite-slot X"
+                    " -- see mothula_damage_bugfix's docstring. Mothula's",
+                    "; own class 4/5 sword hits get redirected to class"
+                    " 6 (spike-safe); every other sprite/class is"
+                    " untouched. Replays the 2 displaced instructions"
+                    " (LDA.b #$10 / STA.b $47) before rejoining.",
+                    "MothulaClassRedirect:",
+                    "LDA.w $0E20,X ; current sprite type",
+                    "CMP.b #$88 ; Mothula",
+                    "BNE .not_mothula",
+                    "LDA.w $0CF2 ; damage class just assigned",
+                    "CMP.b #$04",
+                    "BEQ .redirect",
+                    "CMP.b #$05",
+                    "BNE .not_mothula",
+                    ".redirect",
+                    "LDA.b #$06",
+                    "STA.w $0CF2",
+                    ".not_mothula",
+                    "LDA.b #$10",
+                    "STA.b $47",
+                    "JML $06ED8D ; CheckSwordDamageToSprite fallthrough"
+                    " into ApplyDamageToSprite setup",
+                ]
+            ).ensure_anchors(),
+            0x29D300,
+            "Mothula damage-class redirect (see apply_base_edits).",
+        )
+    return relocation
+
+
 def apply_base_edits(
     english: Rom,
     *,
@@ -3269,6 +3389,7 @@ def apply_base_edits(
     epilepsy_fix: bool = True,
     us_title_screen: bool = True,
     low_health_beep: bool = True,
+    fix_mothula_bugs: bool = False,
 ) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
@@ -3466,6 +3587,36 @@ def apply_base_edits(
             _address_of_line(english, "RefillLogic", "BNE .done_beeping"),
             "BRA .done_beeping",
             comment="[ENG-HUD] skip the low-health warning beep entirely",
+        )
+    if fix_mothula_bugs:
+        # See mothula_damage_bugfix's docstring. Redirect right after the
+        # nibble-unpacking loop's own CPX/BCC exit check (5 bytes: CPX.w
+        # #$1000 is 3, BCC .next is 2) into our replacement, which
+        # replays that same check before doing anything else -- the 1
+        # orphaned byte is the tail of the displaced BCC, now unreachable.
+        cpx_address = _address_of_line(
+            english, "DecompressEnemyDamageSubclasses", "CPX.w #$1000"
+        )
+        english.relocate_block(
+            cpx_address,
+            "EN_MothulaDamageFix",
+            resume=cpx_address + 5,
+            orphan=(0x00,),
+        )
+        # Redirect right after CheckSwordDamageToSprite (bank_06) restores
+        # the sprite-slot X (PLX), replacing the 2 instructions it sets up
+        # next (LDA.b #$10 / STA.b $47 -- 4 bytes total, matching JML
+        # exactly, no orphan) with our class-4/5-to-6 Mothula check.
+        redirect_address = _address_of_line(
+            english, "CheckSwordDamageToSprite", "LDA.b #$10"
+        )
+        resume_address = _address_of_line(
+            english, "CheckSwordDamageToSprite", "LDA.b #$9D"
+        )
+        english.relocate_block(
+            redirect_address,
+            "EN_MothulaClassRedirect",
+            resume=resume_address,
         )
     # Credits keeps its own JP-native (bolder) font, but no longer via JP's
     # own runtime decompression pipeline: jp_credits_font.2bpp
@@ -4150,6 +4301,7 @@ def build(
     gba_text_fixes: bool = True,
     low_health_beep: bool = True,
     flute_is_ocarina: bool = False,
+    fix_mothula_bugs: bool = False,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Rom:
@@ -4217,7 +4369,15 @@ def build(
     ocarina_dialogue_fixes`), the item menu (``item_menu``'s ``fix_flute_
     to_ocarina``), and the credits (skips ``credits_bank``'s
     ``edit_flute_boy``, leaving JP's own "OCARINA BOY PLAYS AGAIN" caption
-    in place).
+    in place). ``fix_mothula_bugs`` (also only meaningful alongside
+    ``changes``, default off) applies :func:`mothula_damage_bugfix`: JP
+    1.0/US Mothula is immune to golden-sword swings/dashes, tempered-sword
+    spin attacks, and golden-sword spin attacks (all zeroed out by its own
+    damage-table row); ``True`` gives it the same sword-tier damage
+    scaling every other class already has. Does not touch Mothula's own
+    immunity to its room's spike hazards (see the function's docstring for
+    why the two are linked) -- not a full GBA-parity fix, just this
+    specific reported bug.
     """
     title_screen_on = us_title_screen and changes
     sources = Sources(
@@ -4239,6 +4399,9 @@ def build(
         hud_max_capacity_color(
             changes=changes,
             yellow_counts_at_absolute_max=yellow_counts_at_absolute_max,
+        ),
+        mothula_damage_bugfix(
+            changes=changes, fix_mothula_bugs=fix_mothula_bugs
         ),
         credits_bank(
             sources,
@@ -4285,6 +4448,7 @@ def build(
             epilepsy_fix=epilepsy_fix,
             us_title_screen=title_screen_on,
             low_health_beep=low_health_beep,
+            fix_mothula_bugs=fix_mothula_bugs,
         )
         if intro_fix:
             apply_intro_fix(english)
