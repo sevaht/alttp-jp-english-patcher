@@ -3302,7 +3302,7 @@ def mothula_damage_bugfix(*, changes: bool, fix_mothula_bugs: bool = False) -> R
     fix, which edited classes 4/5 directly and would likely have
     reintroduced Mothula self-damaging on its own spikes.
 
-    Two hooks:
+    Three hooks:
     1. Right after ``DecompressEnemyDamageSubclasses``'s nibble-unpacking
        loop finishes (before it returns, bank_02) -- give Mothula's row a
        nonzero (1, matching classes 1-3's 2/4/8 damage scaling) defense
@@ -3316,6 +3316,32 @@ def mothula_damage_bugfix(*, changes: bool, fix_mothula_bugs: bool = False) -> R
        Placed after ``PLX`` specifically because ``X`` is repurposed as a
        scratch table index for the class lookup itself and only holds the
        sprite slot again once restored.
+    3. A second, genuinely distinct bug, found by tracing why a sword hit
+       can still be "eaten" if Mothula happens to touch a spike in the
+       same frame: ``ApplyDamageToSprite`` doesn't apply damage
+       immediately. It queues the larger of this frame's damage and
+       whatever's already queued into per-sprite WRAM ``$0CE2,X`` (so two
+       hits in one frame don't lose the bigger one) -- *except* that a
+       hit resolving to exactly 0 damage takes a different path
+       (``.new_damage_less``/``.powder_damage``) that unconditionally
+       ``JMP``s to ``.clear_queued_damage``, zeroing ``$0CE2,X``
+       regardless of what was already queued. Since a spike touch always
+       resolves to 0 damage against Mothula (defense subclass 0 for
+       classes 4/5, untouched by hook 2 above), a spike touch landing in
+       the same frame as a real sword hit wipes the sword's queued
+       damage -- independent of which damage class the sword hit used,
+       so hook 2 alone can't fix it (and neither does the community's
+       ``mothula_l4.ips``, confirmed by the user's own testing). The
+       actual spike-contact attempt happens in ``CheckSpriteTileProperty``
+       (bank_06): any sprite standing on tile type ``$44`` (spike floor)
+       unconditionally tries a class-4 hit via
+       ``CheckAncillaDamageToSprite_preset``. Hooked right before that
+       call to skip it entirely when the sprite is Mothula -- the gating
+       checks above it (touch-eligibility, frozen-sprite bail-out) still
+       run normally for every sprite including Mothula, only the damage
+       attempt (and its reaction/knockback side effect, itself harmless
+       since it would've been a 0-damage hit anyway) is skipped, so a
+       spike touch on Mothula can no longer clear a real queued hit.
     """
     relocation = Relocation(changes=changes)
     if changes and fix_mothula_bugs:
@@ -3376,6 +3402,36 @@ def mothula_damage_bugfix(*, changes: bool, fix_mothula_bugs: bool = False) -> R
             ).ensure_anchors(),
             0x29D300,
             "Mothula damage-class redirect (see apply_base_edits).",
+        )
+        relocation.place(
+            Assembly.from_content(
+                [
+                    "; [ENG-MOTHULA] Hooked from CheckSpriteTileProperty"
+                    " (bank_06), right before the class-4 spike-floor"
+                    " damage attempt -- see mothula_damage_bugfix's"
+                    " docstring point 3. A 0-damage hit (guaranteed for",
+                    "; Mothula, class 4/5 defense subclass is still 0)"
+                    " would otherwise clear any already-queued real"
+                    " sword damage this frame. Skips the attempt (and"
+                    " its harmless-anyway reaction side effect)",
+                    "; entirely for Mothula; every other sprite is"
+                    " unaffected. Replays LDA.b #$04 / JSL before"
+                    " rejoining for non-Mothula sprites.",
+                    "MothulaSpikeImmunity:",
+                    "LDA.w $0E20,X ; current sprite type",
+                    "CMP.b #$88 ; Mothula",
+                    "BEQ .skip_for_mothula",
+                    "LDA.b #$04",
+                    "JSL CheckAncillaDamageToSprite_preset",
+                    "JML $06E849 ; CheckSpriteTileProperty continuation",
+                    "",
+                    ".skip_for_mothula",
+                    "JML $06E856 ; ...skip_damage_or_recoil"
+                    " (BRA .succeed_and_exit)",
+                ]
+            ).ensure_anchors(),
+            0x29D400,
+            "Mothula spike-contact damage-queue fix (see apply_base_edits).",
         )
     return relocation
 
@@ -3617,6 +3673,21 @@ def apply_base_edits(
             redirect_address,
             "EN_MothulaClassRedirect",
             resume=resume_address,
+        )
+        # Redirect right before CheckSpriteTileProperty's (bank_06) class-4
+        # spike-floor damage attempt (LDA.b #$04 / JSL, 6 bytes total --
+        # a 4-byte JML plus 2 orphan bytes) with our Mothula skip-check.
+        spike_address = _address_of_line(
+            english, "CheckSpriteTileProperty", "LDA.b #$04"
+        )
+        spike_resume_address = _address_of_line(
+            english, "CheckSpriteTileProperty", "LDA.w $0EF0,X"
+        )
+        english.relocate_block(
+            spike_address,
+            "EN_MothulaSpikeImmunity",
+            resume=spike_resume_address,
+            orphan=(0x00, 0x00),
         )
     # Credits keeps its own JP-native (bolder) font, but no longer via JP's
     # own runtime decompression pipeline: jp_credits_font.2bpp
