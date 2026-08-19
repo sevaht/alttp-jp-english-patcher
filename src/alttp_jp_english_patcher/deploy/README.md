@@ -82,6 +82,14 @@ photosensitive-epilepsy-safety pass; this build applies that same reduction
 by default. Pass `--no-epilepsy-fix` when generating to keep JP 1.0's
 original (much brighter) flash intensity instead.
 
+### Low-health warning beep
+
+By default this build leaves the repeating low-health warning beep exactly
+as JP 1.0/US shipped it (queued every 32 frames while current health is
+below a fixed per-max-hearts threshold, silenced during cutscenes and
+healing). Pass `--no-low-health-beep` when generating to silence it
+entirely.
+
 ### Attract-mode caption timing
 
 The attract-mode demo's four auto-scrolling story captions (the "Long ago,
@@ -106,6 +114,16 @@ from "FAERIE" to "FAIRY", and the bottled "GOOD BEE" item is renamed to
 the bottle-content menu and the equipped-item display. Pass
 `--no-gba-text-fixes` when generating to keep the original US translation's
 wording instead.
+
+### Ocarina/Flute
+
+The JP original calls this item the Ocarina, matching every other Zelda
+game; the US translation renamed it "Flute". By default this build keeps
+the US translation's "Flute" naming. Pass `--flute-is-ocarina` when
+generating to rename it to "Ocarina" everywhere -- dialogue, the item
+menu, and the credits, where JP's own "OCARINA BOY PLAYS AGAIN" caption is
+kept instead of being converted to "FLUTE BOY PLAYS AGAIN" (this is
+independent of `--keep-jp-credits`).
 
 ### Title screen
 

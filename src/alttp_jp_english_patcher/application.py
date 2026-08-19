@@ -261,6 +261,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "true max, no tiers)",
     )
     parser.add_argument(
+        "--no-low-health-beep",
+        action="store_true",
+        help="silence the repeating low-health warning beep (queued every "
+        "32 frames while current health is below a low threshold); by "
+        "default this patcher leaves it exactly as JP 1.0/US shipped it",
+    )
+    parser.add_argument(
+        "--flute-is-ocarina",
+        action="store_true",
+        help="rename 'Flute' to 'Ocarina' -- the JP original's name for "
+        "the item, matching every other Zelda game -- in dialogue, the "
+        "item menu, and the credits (JP's own 'OCARINA BOY PLAYS AGAIN' "
+        "caption is kept instead of converting it to 'FLUTE BOY PLAYS "
+        "AGAIN'); by default this patcher keeps the US translation's "
+        "'Flute' naming",
+    )
+    parser.add_argument(
         "--no-gba-text-fixes",
         action="store_true",
         help="keep the original US translation's wording in dialogue, the "
@@ -358,6 +375,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         us_title_screen=args.title_screen == "us",
         yellow_counts_at_absolute_max=args.yellow_counts_at_absolute_max,
         gba_text_fixes=not args.no_gba_text_fixes,
+        low_health_beep=not args.no_low_health_beep,
+        flute_is_ocarina=args.flute_is_ocarina,
         null_padbyte_threshold=args.null_padbyte_threshold,
         nop_padbyte_threshold=args.nop_padbyte_threshold,
     )

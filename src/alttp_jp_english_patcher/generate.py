@@ -196,6 +196,112 @@ def nop_fill(
 THEFONT_LABELS = frozenset({"TheFont", "TheFont_end"})
 
 
+def flute_to_ocarina_dialogue_fixes(main: Assembly) -> None:
+    """Renames "Flute"/"flute" to "Ocarina"/"ocarina" everywhere it occurs
+    in ``main`` (9 of 10 occurrences in the dialogue/intro message data --
+    the 10th, Message_0183, falls past ``Message_DataExtra`` and is
+    :func:`flute_to_ocarina_overflow_fix`) -- the JP original's name for
+    the item (matching every other Zelda game); the US translation renamed
+    it "Flute". Every occurrence is spelled with literal characters only
+    (no dictionary tokens participate), so each is a plain 5-byte ->
+    7-byte splice, address-anchored per :func:`gba_dialogue_text_fixes`'s
+    convention. None need re-wrapping: every line stays within the range
+    other real lines in this same message data already reach.
+    """
+    main.splice(
+        "#_1CA3BC:",  # Message_0067: "Here is the Flute!" -> "...Ocarina!"
+        datas(
+            [
+                "db $59, $D8, $59, $0E, $1C, $1A, $2B, $22, $27, $1A"
+                " ; the Ocarina"
+            ]
+        ),
+        until="#_1CA3C4:",
+    )
+    main.splice(
+        "#_1CB778:",  # Message_00A1: "...play the flute," -> "...ocarina,"
+        datas(["db $28, $1C, $1A, $2B, $22, $27, $1A, $42 ; ocarina,"]),
+        until="#_1CB77E:",
+    )
+    main.splice(
+        "#_1CB7FB:",  # Message_00A2: "...son's flute...!" -> "...ocarina...!"
+        datas(["db $28, $1C, $1A, $2B, $22, $27, $1A, $43, $3E ; ocarina…!"]),
+        until="#_1CB802:",
+    )
+    main.splice(
+        "#_1CB879:",  # Message_00A3: "keep the flute?" -> "...ocarina?"
+        datas(
+            [
+                "db $24, $1E, $1E, $29, $59, $D8, $59, $28 ; keep the o",
+                "db $1C, $1A, $2B, $22, $27, $1A, $3F ; carina?",
+            ]
+        ),
+        until="#_1CB886:",
+    )
+    main.splice(
+        "#_1CCB19:",  # Message_00E5 (1/2): "...playing the flute in"
+        datas(
+            [
+                "db $BA, $32, $B3, $D8, $59, $28, $1C, $1A"
+                " ; laying the oca",
+                "db $2B, $22, $27, $1A, $59, $B4 ; rina in",
+            ]
+        ),
+        until="#_1CCB25:",
+    )
+    main.splice(
+        "#_1CCB83:",  # Message_00E5 (2/2): "buried my flute there"
+        datas(
+            [
+                "db $32, $59, $28, $1C, $1A, $2B, $22, $27, $1A, $59"
+                " ; y ocarina "
+            ]
+        ),
+        until="#_1CCB8B:",
+    )
+    main.splice(
+        "#_1CCC18:",  # Message_00E8: "find my flute?" -> "...ocarina?"
+        datas(
+            [
+                "db $1D, $59, $26, $32, $59, $28, $1C, $1A ; d my oca",
+                "db $2B, $22, $27, $1A, $3F ; rina?",
+            ]
+        ),
+        until="#_1CCC23:",
+    )
+    main.splice(
+        "#_1CCC66:",  # Message_00E9 (1/2): "...play my flute" (end of line)
+        datas(["db $28, $1C, $1A, $2B, $22, $27, $1A ; ocarina"]),
+        until="#_1CCC6B:",
+    )
+    main.splice(
+        "#_1CCD08:",  # Message_00E9 (2/2): "the flute one last time…"
+        datas(
+            [
+                "db $D8, $59, $28, $1C, $1A, $2B, $22, $27, $1A, $59"
+                " ; the ocarina "
+            ]
+        ),
+        until="#_1CCD10:",
+    )
+
+def flute_to_ocarina_overflow_fix(overflow: Assembly) -> None:
+    """The one of the 10 dialogue occurrences (Message_0183) that falls
+    past ``Message_DataExtra`` (bank $0E addressing) rather than in
+    ``main`` -- see :func:`flute_to_ocarina_dialogue_fixes`.
+    """
+    overflow.splice(
+        "#_0EEB8D:",  # Message_0183: "animals with his Flute." -> "...Ocarina."
+        datas(
+            [
+                "db $B0, $2C, $59, $0E, $1C, $1A, $2B, $22, $27, $1A"
+                " ; his Ocarina"
+            ]
+        ),
+        until="#_0EEB95:",
+    )
+
+
 def gba_dialogue_text_fixes(main: Assembly) -> None:
     """GBA-era wording fixes applied to the dialogue/intro message data
     (``Message_Data``, US bank $1C): ``pegasus shoes`` -> ``pegasus boots``,
@@ -408,6 +514,7 @@ def text(
     *,
     changes: bool,
     gba_text_fixes: bool = True,
+    flute_is_ocarina: bool = False,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Relocation:
     """The US text subsystem: the VWF font (bank ``$20``), the message engine
@@ -420,7 +527,10 @@ def text(
 
     ``gba_text_fixes`` (only meaningful alongside ``changes``) applies
     :func:`gba_dialogue_text_fixes` to the message data; ``False`` leaves
-    the US translation's original wording untouched.
+    the US translation's original wording untouched. ``flute_is_ocarina``
+    (also only meaningful alongside ``changes``) applies :func:`flute_to_
+    ocarina_dialogue_fixes`; ``True`` renames "Flute" to "Ocarina" (the JP
+    original's name) everywhere it occurs in dialogue.
     """
     us, jp = sources.us, sources.jp
     engine = us.extract(
@@ -441,6 +551,9 @@ def text(
     overflow = us.blocks_until("Message_DataExtra")
     if changes and gba_text_fixes:
         gba_dialogue_text_fixes(main)
+    if changes and flute_is_ocarina:
+        flute_to_ocarina_dialogue_fixes(main)
+        flute_to_ocarina_overflow_fix(overflow)
     # CreateMessagePointers walks byte-by-byte until it reads a literal $FF
     # (the table-end marker); in the US ROM this falls out for free since
     # Message_DataExtra runs to the natural, $FF-padded end of its bank. Our
@@ -1298,6 +1411,7 @@ def credits_bank(
     changes: bool,
     keep_jp_credits: bool = False,
     gba_text_fixes: bool = True,
+    flute_is_ocarina: bool = False,
 ) -> Relocation:
     """Bank ``$2E``: the JP credits reader + tables, mirror-placed, kept on
     JP's own font and text -- the JP credits are already English, and its
@@ -1327,7 +1441,11 @@ def credits_bank(
     fixes, not JP-1.0-mistake fixes) recenters and relabels the SMITHERY
     location caption to SMITHY, and changes the VENUS. QUEEN OF FAERIES
     caption to FAIRIES, matching the same wording changes
-    :func:`gba_dialogue_text_fixes` makes to the dialogue.
+    :func:`gba_dialogue_text_fixes` makes to the dialogue. ``flute_is_
+    ocarina`` (also independent of ``keep_jp_credits``) skips
+    ``edit_flute_boy`` entirely, leaving JP's own pristine "OCARINA BOY
+    PLAYS AGAIN" caption in place (already correctly centered for its own
+    length) instead of converting it to "FLUTE BOY PLAYS AGAIN".
 
     Placed in three contiguous groups (JP interleaves them with credits code
     we do not relocate). The readers return long -- they are reached across
@@ -1653,7 +1771,8 @@ def credits_bank(
                 if "Credits_AddEndingSequenceText" in names:
                     edit_priest_to_sage(group)
                     edit_flippers_for_sale(group)
-                    edit_flute_boy(group)
+                    if not flute_is_ocarina:
+                        edit_flute_boy(group)
                     edit_recenter_sahasralahs_homecoming(group)
             if gba_text_fixes and "Credits_AddEndingSequenceText" in names:
                 edit_venus_faeries_to_fairies(group)
@@ -1666,7 +1785,11 @@ def credits_bank(
 
 
 def item_menu(
-    sources: Sources, *, changes: bool, gba_text_fixes: bool = True
+    sources: Sources,
+    *,
+    changes: bool,
+    gba_text_fixes: bool = True,
+    flute_is_ocarina: bool = False,
 ) -> Relocation:
     """Bank ``$2D``: the US item menu, mirror-placed. Four entry routines get
     a DBR-setting trampoline (their bodies become ``<name>_body`` and return
@@ -1682,7 +1805,12 @@ def item_menu(
     entry becomes "FAIRY" (single row, left-aligned, unchanged layout), and
     "GOOD BEE" becomes "GOLDEN"/"BEE" (two rows, top-left/bottom-right,
     matching ``ItemMenuNameText_Mirror``'s "MAGIC"/"MIRROR" layout) -- the
-    names the GBA re-release and every later game use.
+    names the GBA re-release and every later game use. ``flute_is_ocarina``
+    (also only meaningful alongside ``changes``, independent of
+    ``gba_text_fixes``) renames ``ItemMenuNameText_Flute``'s "FLUTE" entry
+    (both the inactive and active icon-state copies) to "OCARINA" -- the
+    JP original's name for the item, still single-row/left-aligned since
+    "OCARINA" is exactly 7 letters.
     """
     us, jp = sources.us, sources.jp
     entries = (
@@ -1847,6 +1975,30 @@ def item_menu(
         ]  # FAIRY
         row.comment = " fairy"
 
+    def fix_flute_to_ocarina(region: Assembly) -> None:
+        # JP calls this the Ocarina (matching every other Zelda game); the
+        # US translation renamed it "Flute". Single row, left-aligned, same
+        # layout as FLUTE -- OCARINA is exactly 7 letters, so it still fits
+        # the 8-tile row with one blank left over. Both bottle-menu entries
+        # (inactive/active flute icon state) are byte-identical.
+        ocarina = [
+            "$255E",
+            "$2552",
+            "$2550",
+            "$2561",
+            "$2558",
+            "$255D",
+            "$2550",
+            "$24F5",
+        ]
+        needle = "dw $2555, $255B, $2564, $2563, $2554, $24F5, $24F5, $24F5"
+        first = region.find(needle)
+        region.lines[first].arguments = list(ocarina)
+        region.lines[first].comment = " ocarina"
+        second = region.find(needle, first + 1)
+        region.lines[second].arguments = list(ocarina)
+        region.lines[second].comment = " ocarina"
+
     region = us.concat([*name_text])
     expand_mirror_slot(region)  # both builds: real copies (full) or padding
     if changes:
@@ -1858,6 +2010,8 @@ def item_menu(
                 fix_faerie_to_fairy,
                 fix_good_bee_to_golden_bee,
             ]
+        if flute_is_ocarina:
+            edit_table["ItemMenuNameText_Flute"] = [fix_flute_to_ocarina]
         region.apply_edit_table(edit_table)
     place(region, mirror(require_start(region)))
 
@@ -3114,6 +3268,7 @@ def apply_base_edits(
     keep_religious_imagery: bool = False,
     epilepsy_fix: bool = True,
     us_title_screen: bool = True,
+    low_health_beep: bool = True,
 ) -> None:
     """Apply the base edits that are not plain hooks (see _wire_hooks)."""
     # Save compatibility: invoke the migrator (in bank $2C) from bank_00's
@@ -3295,6 +3450,22 @@ def apply_base_edits(
             _address_of_line(english, "OversaturateColor", "ADC.w #$3800"),
             "ADC.w #$0800",
             comment="[ENG-GFX] toned-down flash brightness (later JP rev)",
+        )
+    if not low_health_beep:
+        # RefillLogic (bank_0D) queues SFX2.2B (the repeating low-health
+        # warning beep) once every 32 frames whenever current health is
+        # below HeartBeepThresholds[current max hearts] -- gated first on
+        # "not mid-cutscene" / "not mid-heal", both plain BNE-past checks
+        # ahead of the threshold compare and the SFX queue/timer-tick
+        # itself. Turning the first of those into an unconditional branch
+        # (same 2-byte size) skips the whole block -- threshold compare,
+        # SFX queue, and the beep-timer WRAM word ($04CA, read/written
+        # nowhere else in the ROM) -- without touching health/heart state
+        # or any other HUD drawing.
+        english.set_operand(
+            _address_of_line(english, "RefillLogic", "BNE .done_beeping"),
+            "BRA .done_beeping",
+            comment="[ENG-HUD] skip the low-health warning beep entirely",
         )
     # Credits keeps its own JP-native (bolder) font, but no longer via JP's
     # own runtime decompression pipeline: jp_credits_font.2bpp
@@ -3977,6 +4148,8 @@ def build(
     us_title_screen: bool = True,
     yellow_counts_at_absolute_max: bool = False,
     gba_text_fixes: bool = True,
+    low_health_beep: bool = True,
+    flute_is_ocarina: bool = False,
     null_padbyte_threshold: int = DEFAULT_NULL_PADBYTE_THRESHOLD,
     nop_padbyte_threshold: int = DEFAULT_NOP_PADBYTE_THRESHOLD,
 ) -> Rom:
@@ -4035,7 +4208,16 @@ def build(
     :func:`gba_dialogue_text_fixes`/``credits_bank``'s ``edit_smithery_to_
     smithy``/``edit_venus_faeries_to_fairies``) plus ``item_menu``'s "GOOD
     BEE" -> "GOLDEN"/"BEE" item-menu rename; ``False`` leaves the original
-    US translation's wording.
+    US translation's wording. ``low_health_beep`` (also only meaningful
+    alongside ``changes``) leaves the repeating low-health warning beep
+    (``apply_base_edits``, ``RefillLogic`` in bank_0D) in place; ``False``
+    (``--no-low-health-beep``) silences it. ``flute_is_ocarina`` (also
+    only meaningful alongside ``changes``) renames "Flute" to "Ocarina"
+    (the JP original's name for the item) in dialogue (:func:`flute_to_
+    ocarina_dialogue_fixes`), the item menu (``item_menu``'s ``fix_flute_
+    to_ocarina``), and the credits (skips ``credits_bank``'s
+    ``edit_flute_boy``, leaving JP's own "OCARINA BOY PLAYS AGAIN" caption
+    in place).
     """
     title_screen_on = us_title_screen and changes
     sources = Sources(
@@ -4047,6 +4229,7 @@ def build(
             sources,
             changes=changes,
             gba_text_fixes=gba_text_fixes,
+            flute_is_ocarina=flute_is_ocarina,
             nop_padbyte_threshold=nop_padbyte_threshold,
         ),
         font_upload(sources, changes=changes),
@@ -4062,9 +4245,15 @@ def build(
             changes=changes,
             keep_jp_credits=keep_jp_credits,
             gba_text_fixes=gba_text_fixes,
+            flute_is_ocarina=flute_is_ocarina,
         ),
         attract_text_timing_fix(sources, changes=changes),
-        item_menu(sources, changes=changes, gba_text_fixes=gba_text_fixes),
+        item_menu(
+            sources,
+            changes=changes,
+            gba_text_fixes=gba_text_fixes,
+            flute_is_ocarina=flute_is_ocarina,
+        ),
         file_select(
             sources,
             changes=changes,
@@ -4095,6 +4284,7 @@ def build(
             keep_religious_imagery=keep_religious_imagery,
             epilepsy_fix=epilepsy_fix,
             us_title_screen=title_screen_on,
+            low_health_beep=low_health_beep,
         )
         if intro_fix:
             apply_intro_fix(english)
